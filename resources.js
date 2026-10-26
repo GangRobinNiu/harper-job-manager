@@ -100,5 +100,5 @@ class CompleteJob extends Resource {
 // Path names for the classes above.
 export { PublishEvent as events, ClaimJobs as claim, HeartbeatJob as heartbeat, CompleteJob as complete };
 
-// One in-process worker per node, on the primary worker thread.
+// One Harper worker per node, on the primary worker thread (see src/localWorker.js for its settings).
 if (server.workerIndex === 0) startLocalWorker();

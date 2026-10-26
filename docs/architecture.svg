@@ -1,0 +1,160 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1350 650" aria-label="Clients, storage events and the scheduler publish events to the Harper event router, which enqueues jobs into per-queue lanes of the Job table. A Harper worker on the queue node and Harper job nodes over HTTP claim jobs with leases; failures retry and end in a dead-letter state, and milestones stream live to clients.">
+<title>Harper Job Manager architecture</title>
+<style>
+svg { --bg:#ffffff;--fg:#1b2321;--muted:#5b6764;--line:#c9d1ce;--edge:#46524f;--accent:#0f7a68;--accent-bg:#ddf1ec;--danger:#b4412f;--lane:#f6f7f6; }
+@media (prefers-color-scheme: dark) { svg { --bg:#0d1117;--fg:#e4ebe9;--muted:#98a6a2;--line:#34403d;--edge:#a9b6b2;--accent:#4fc9b1;--accent-bg:#163a33;--danger:#ef8a76;--lane:#161b22; } }
+.bgfill { fill: var(--bg); }
+.code rect { fill: var(--accent-bg); stroke: var(--accent); stroke-width: 1.5; }
+.tbl rect { fill: var(--bg); stroke: var(--line); stroke-width: 1.5; }
+.tbl line { stroke: var(--line); stroke-width: 1.5; }
+.lane rect { fill: var(--lane); stroke: var(--line); stroke-width: 1; }
+.ext rect { fill: var(--bg); stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 5 4; }
+.dead rect { stroke: var(--danger); }
+.boundary { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 8 6; }
+.t { fill: var(--fg); font: 600 13px "Segoe UI", -apple-system, Helvetica, Arial, sans-serif; text-anchor: middle; }
+.tm { fill: var(--fg); font: 500 12.5px ui-monospace, Consolas, Menlo, monospace; text-anchor: middle; }
+.s { fill: var(--muted); font: 400 11px ui-monospace, Consolas, Menlo, monospace; text-anchor: middle; }
+.lbl { fill: var(--muted); font: 400 11px "Segoe UI", -apple-system, Helvetica, Arial, sans-serif; }
+.mid { text-anchor: middle; }
+.end { text-anchor: end; }
+.zone { fill: var(--accent); font: 700 12px "Segoe UI", -apple-system, Helvetica, Arial, sans-serif; letter-spacing: 0.08em; }
+.edge { fill: none; stroke: var(--edge); stroke-width: 1.4; }
+.ah { fill: var(--edge); }
+.edge-dead { fill: none; stroke: var(--danger); stroke-width: 1.4; }
+.ah-dead { fill: var(--danger); }
+</style>
+<rect class="bgfill" x="0" y="0" width="1350" height="650"/>
+<defs>
+            <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
+            <marker id="ad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-dead" d="M0 0 L10 5 L0 10 z"/></marker>
+          </defs>
+
+          <!-- Harper boundary -->
+          <rect class="boundary" x="220" y="20" width="880" height="580" rx="14"/>
+          <text class="zone" x="238" y="46">HARPER QUEUE NODE</text>
+          <text class="lbl" x="238" y="62">one process · worker threads</text>
+
+          <!-- Sources -->
+          <g class="ext"><rect x="20" y="90" width="170" height="50" rx="8"/></g>
+          <text class="t" x="105" y="112">Web app</text><text class="s" x="105" y="128">sends webhooks</text>
+          <g class="ext"><rect x="20" y="170" width="170" height="50" rx="8"/></g>
+          <text class="t" x="105" y="192">API client</text><text class="s" x="105" y="208">starts a run</text>
+          <g class="ext"><rect x="20" y="250" width="170" height="50" rx="8"/></g>
+          <text class="t" x="105" y="272">Input storage</text><text class="s" x="105" y="288">file created</text>
+
+          <line class="edge" x1="190" y1="115" x2="248" y2="115" marker-end="url(#a)"/>
+          <line class="edge" x1="190" y1="195" x2="248" y2="195" marker-end="url(#a)"/>
+          <line class="edge" x1="190" y1="275" x2="248" y2="275" marker-end="url(#a)"/>
+
+          <!-- Endpoints -->
+          <g class="code"><rect x="250" y="90" width="150" height="50" rx="8"/></g>
+          <text class="tm" x="325" y="112">POST /webhook/{id}</text><text class="s" x="325" y="128">job.webhook</text>
+          <g class="code"><rect x="250" y="170" width="150" height="50" rx="8"/></g>
+          <text class="tm" x="325" y="192">POST /trigger/{id}</text><text class="s" x="325" y="208">job.api</text>
+          <g class="code"><rect x="250" y="250" width="150" height="50" rx="8"/></g>
+          <text class="tm" x="325" y="272">POST /events</text><text class="s" x="325" y="288">CloudEvents</text>
+
+          <!-- Scheduler -->
+          <g class="code"><rect x="250" y="380" width="150" height="64" rx="8"/></g>
+          <text class="t" x="325" y="406">Scheduler tick</text><text class="s" x="325" y="424">every 5s · leader only</text>
+
+          <!-- Endpoints to router -->
+          <line class="edge" x1="400" y1="115" x2="458" y2="175" marker-end="url(#a)"/>
+          <line class="edge" x1="400" y1="195" x2="458" y2="205" marker-end="url(#a)"/>
+          <line class="edge" x1="400" y1="275" x2="458" y2="235" marker-end="url(#a)"/>
+          <polyline class="edge" points="400,400 500,400 500,262" marker-end="url(#a)"/>
+          <text class="lbl end" x="492" y="334">schedule.fired</text>
+
+          <!-- EventSubscription -->
+          <g class="tbl"><rect x="460" y="40" width="160" height="56" rx="6"/></g>
+          <text class="t" x="540" y="64">EventSubscription</text><text class="s" x="540" y="81">type + subject rules</text>
+          <line class="edge" x1="540" y1="96" x2="540" y2="148" marker-end="url(#a)"/>
+          <text class="lbl" x="548" y="127">match</text>
+
+          <!-- Router -->
+          <g class="code"><rect x="460" y="150" width="160" height="110" rx="8"/></g>
+          <text class="t" x="540" y="192">Event router</text>
+          <text class="s" x="540" y="210">src/router.js</text>
+          <text class="s" x="540" y="227">direct · rules · fan-out</text>
+
+          <!-- Event table -->
+          <line class="edge" x1="580" y1="260" x2="580" y2="438" marker-end="url(#a)"/>
+          <text class="lbl" x="588" y="362">records</text>
+          <g class="tbl"><rect x="460" y="440" width="160" height="60" rx="6"/></g>
+          <text class="t" x="540" y="465">Event</text><text class="s" x="540" y="482">routed · unrouted</text>
+
+          <!-- Router to Job -->
+          <line class="edge" x1="620" y1="205" x2="698" y2="205" marker-end="url(#a)"/>
+          <text class="lbl mid" x="659" y="197">enqueue</text>
+
+          <!-- Job table with queue lanes -->
+          <g class="tbl"><rect x="700" y="40" width="220" height="300" rx="6"/><line x1="700" y1="90" x2="920" y2="90"/></g>
+          <text class="t" x="810" y="62">Job</text><text class="s" x="810" y="79">the queue · src/queue.js</text>
+          <g class="lane"><rect x="715" y="100" width="190" height="50" rx="5"/></g>
+          <text class="tm" x="810" y="121">queue: local</text><text class="s" x="810" y="137">internal · maintenance, tests</text>
+          <g class="lane"><rect x="715" y="165" width="190" height="50" rx="5"/></g>
+          <text class="tm" x="810" y="186">queue: data-loader</text><text class="s" x="810" y="202">dedicated</text>
+          <g class="lane"><rect x="715" y="230" width="190" height="50" rx="5"/></g>
+          <text class="tm" x="810" y="251">queue: generic</text><text class="s" x="810" y="267">shared integrations</text>
+          <text class="s" x="810" y="304">Table.lock on every claim</text>
+          <text class="s" x="810" y="320">lease · retry with backoff</text>
+
+          <!-- Scheduler reaps leases -->
+          <polyline class="edge" points="325,444 325,560 660,560 660,320 698,320" marker-end="url(#a)"/>
+          <text class="lbl mid" x="490" y="552">reap expired leases</text>
+
+          <!-- JobDefinition -->
+          <g class="tbl"><rect x="700" y="380" width="180" height="56" rx="6"/></g>
+          <text class="t" x="790" y="404">JobDefinition</text><text class="s" x="790" y="421">handler · settings · cron</text>
+          <line class="edge" x1="790" y1="380" x2="790" y2="342" marker-end="url(#a)"/>
+          <text class="lbl" x="798" y="366">claim reads</text>
+
+          <!-- Harper worker on the queue node -->
+          <g class="code"><rect x="960" y="100" width="120" height="50" rx="8"/></g>
+          <text class="t" x="1020" y="122">Harper worker</text><text class="s" x="1020" y="138">handlers.js</text>
+          <line class="edge" x1="960" y1="125" x2="907" y2="125" marker-end="url(#a)"/>
+          <text class="lbl mid" x="933" y="117">claim</text>
+
+          <!-- Harper job nodes -->
+          <rect class="boundary" x="1136" y="60" width="206" height="236" rx="12"/>
+          <text class="zone" x="1150" y="86">HARPER JOB NODES</text>
+          <text class="lbl" x="1150" y="104">same component</text>
+          <text class="lbl" x="1150" y="120">JOB_MANAGER_URL set</text>
+          <g class="code"><rect x="1150" y="165" width="180" height="50" rx="8"/></g>
+          <text class="t" x="1240" y="187">Harper job node</text><text class="s" x="1240" y="203">JOB_QUEUES=data-loader</text>
+          <g class="code"><rect x="1150" y="230" width="180" height="50" rx="8"/></g>
+          <text class="t" x="1240" y="252">Harper job node</text><text class="s" x="1240" y="268">JOB_QUEUES=generic</text>
+          <line class="edge" x1="1148" y1="190" x2="907" y2="190" marker-start="url(#a)" marker-end="url(#a)"/>
+          <line class="edge" x1="1148" y1="255" x2="907" y2="255" marker-start="url(#a)" marker-end="url(#a)"/>
+          <text class="lbl mid" x="1010" y="226">claim · heartbeat · complete</text>
+
+          <!-- Dead letter -->
+          <g class="tbl dead"><rect x="960" y="300" width="120" height="56" rx="6"/></g>
+          <text class="t" x="1020" y="324">Dead letter</text><text class="s" x="1020" y="341">after maxAttempts</text>
+          <line class="edge-dead" x1="920" y1="328" x2="958" y2="328" marker-end="url(#ad)"/>
+
+          <!-- JobEvent -->
+          <g class="tbl"><rect x="960" y="400" width="120" height="56" rx="6"/></g>
+          <text class="t" x="1020" y="424">JobEvent</text><text class="s" x="1020" y="441">milestones</text>
+          <polyline class="edge" points="900,340 900,428 958,428" marker-end="url(#a)"/>
+          <text class="lbl" x="906" y="392">logs</text>
+
+          <!-- Clients -->
+          <g class="ext"><rect x="1150" y="300" width="180" height="156" rx="8"/></g>
+          <text class="t" x="1240" y="356">Clients</text>
+          <text class="s" x="1240" y="375">REST /Job/?status=dead</text>
+          <text class="s" x="1240" y="392">SSE · WebSocket · MQTT</text>
+          <text class="lbl mid" x="1240" y="420">Web UI: backlog</text>
+          <line class="edge" x1="1080" y1="328" x2="1148" y2="328" marker-end="url(#a)"/>
+          <text class="lbl mid" x="1114" y="320">REST</text>
+          <line class="edge" x1="1080" y1="428" x2="1148" y2="428" marker-end="url(#a)"/>
+          <text class="lbl mid" x="1114" y="420">live</text>
+
+          <!-- Legend -->
+          <g class="code"><rect x="230" y="618" width="22" height="14" rx="3"/></g>
+          <text class="lbl" x="260" y="629">Code in Harper</text>
+          <g class="tbl"><rect x="370" y="618" width="22" height="14" rx="3"/></g>
+          <text class="lbl" x="400" y="629">Harper table (REST-exported)</text>
+          <g class="ext"><rect x="580" y="618" width="22" height="14" rx="3"/></g>
+          <text class="lbl" x="610" y="629">Outside Harper</text>
+</svg>

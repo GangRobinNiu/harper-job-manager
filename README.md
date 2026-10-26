@@ -4,28 +4,20 @@ A small multi-tenant job manager built as a Harper component. One queue model ha
 
 - **Cron jobs**: a definition with a cron schedule
 - **API calls and webhooks**: `POST /trigger/{id}` and `POST /webhook/{id}`, with idempotency keys
-- **Predefined jobs**: handlers that run inside Harper
+- **Harper jobs**: handlers that run inside Harper, on the queue node or on dedicated Harper job nodes
 - **Custom integration jobs**: run by external workers that claim them over HTTP, for example to start a container image
 
 Every start is an event. An event router (the equivalent of Azure Event Grid) decides which jobs each event starts. Every job, whatever started it, then gets the same priorities, leases, retries with backoff, a dead-letter state, and a milestone log.
 
 ## How it works
 
-```
- cron tick ──┐                                                    ┌─> in-process worker (queue "local")
- /trigger   ─┤                                                    │
- /webhook   ─┼─> router ──> Job table, one queue per job type ────┤
- /events    ─┘  (Event      (dedupe by idempotency key)            └─> external workers: /claim ─> run image
- (blob created)  Grid)                    │                                             ─> /heartbeat ─> /complete
-                   │                      └─> JobEvent table (milestones), live over SSE / WebSocket / MQTT
-                   └─> Event table (every event and where it went; "unrouted" = router dead letter)
-```
+![Architecture: event sources publish to the router on the Harper queue node, which enqueues jobs into queues in the Job table; the queue node's Harper worker runs the internal local queue, and Harper job nodes claim the other queues over HTTP](docs/architecture.svg)
 
 | Old Service Platform (Azure) | Here (Harper) |
 | --- | --- |
 | Event Grid: routes events by type and subject | `src/router.js` with `EventSubscription` rules |
 | Service Bus queues, one per job type | `Job` table with a `queue` field |
-| Dispatcher plus KEDA, starting a Kubernetes Job per message | External workers calling `/claim` (a real one would start the image) |
+| Dispatcher plus KEDA, starting a Kubernetes Job per message | Harper job nodes running handlers, claiming over `/claim` (Kubernetes jobs are in the backlog) |
 | Kubernetes CronJob publishing an event | Harper's built-in scheduler running the tick, which publishes `schedule.fired` |
 | Event Hub plus milestone logger plus Cosmos DB | `JobEvent` and `Job` tables, streamed live by Harper |
 
@@ -97,6 +89,33 @@ curl "localhost:9926/JobEvent/?jobId=acme-loader:positions-2026-10-26"
 curl -N -H "Accept: text/event-stream" "localhost:9926/Job/acme-loader:positions-2026-10-26"   # live status
 ```
 
+## Harper jobs
+
+A Harper job is a handler in `src/handlers.js`, run inside Harper by the worker in `src/localWorker.js`. Put generic jobs, repeatable solution jobs, and tenant-specific jobs there as named handlers, and point a definition at one with `handler`.
+
+The worker reads its settings from environment variables:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `JOB_QUEUES` | `local` | Queues to serve, comma-separated |
+| `JOB_CONCURRENCY` | `4` | Jobs run at once |
+| `JOB_MANAGER_URL` | unset | The queue node to claim from. Unset means this node is the queue node |
+| `JOB_MANAGER_USER`, `JOB_MANAGER_PASS` | unset | Credentials for the queue node |
+
+On the queue node, the worker claims straight from the `Job` table. Light jobs can stay here:
+
+```bash
+JOB_QUEUES=local,harper npm run dev
+```
+
+Heavy jobs belong on **Harper job nodes**: separate Harper instances that run the same component but only work jobs, so a long data load never slows the API or the queue. A job node claims from the queue node over HTTP, the same way an external worker does, because `Table.lock` only protects claims within one node:
+
+```bash
+JOB_MANAGER_URL=http://queue-node:9926 JOB_QUEUES=harper npm run dev
+```
+
+The `local` queue is for internal use: job system maintenance such as `cleanupFinishedJobs`, which works on the queue node's own tables, and quick tests like `echo`. It only runs on the queue node: `/claim` refuses it, so no job node or external worker can take it. Tenant and solution jobs go on other queues. Harper jobs run in Node.js, without per-job CPU or memory limits, so a runaway job can affect other jobs on the same job node, but not the queue node.
+
 ## API
 
 | Endpoint | Body | Result |
@@ -131,6 +150,20 @@ Results on Harper 5.3.4 with 4 worker threads:
 - **Synchronous routing.** The router enqueues jobs during the publish call, so a publisher gets a result right away; Event Grid instead accepts the event and delivers it with retries. If a job definition is missing, the event is still recorded with the error.
 - **Cleanup is a job.** Old jobs and events are removed by the `cleanupFinishedJobs` handler; schedule it with a cron definition.
 
+## Backlog
+
+- **Kubernetes jobs.** Run container jobs as Kubernetes Jobs, for work that is not JavaScript or that needs per-job CPU and memory limits. Planned shape:
+  - Add `runtime: "harper" | "kubernetes"` to `JobDefinition` (default `harper`). For `kubernetes`, `handler` is an image reference.
+  - A dispatcher claims `kubernetes` jobs, creates a Kubernetes Job from the image with the tenant settings, heartbeats while it runs, and completes the job when the pod finishes. It replaces the sample external worker and the old KEDA processors.
+  - Routing, queues, leases, retries, dead-lettering, and milestones stay shared, so moving a job between Harper and Kubernetes is a definition change.
+- **MQTT wake-up for job nodes.** Today each job node polls `/claim` every second, so an idle cluster still sends a steady stream of empty claims, and a new job waits up to a second. Build this when there are many job nodes or queues, or a job type where pickup speed matters. Planned shape:
+  - Add a `QueueSignal` table with one record per queue. Enqueue and retry touch the queue's record, and Harper publishes the change over MQTT. Workers do not subscribe to `Job` itself, because every heartbeat updates it.
+  - Job nodes subscribe to `QueueSignal/{queue}` for each queue they serve. On a message, they claim until a claim comes back empty or they are full.
+  - Claiming stays on `/claim` with `Table.lock`. MQTT sends every message to every subscriber, so several nodes may wake at once, and the lock still gives each job to one node.
+  - Keep a slow fallback poll (about 30 seconds) for messages missed during a disconnect and for retries whose `runAfter` comes due with no new signal. The scheduler tick could also signal queues whose delayed jobs just came due.
+  - Prior art: the static prerender template publishes `queue_status/producer` (`queued` or `empty`) and its workers claim only when it says `queued`.
+- **Web UI.** A page for operators to manage job definitions, watch jobs and milestones live, and inspect or rerun dead-letter jobs. Most of it needs no new backend: it reads the REST-exported tables and subscribes to `Job` and `JobEvent` changes over SSE or WebSocket. Rerunning a dead job needs one new endpoint that resets it to `pending`.
+
 ## Files
 
 ```
@@ -140,8 +173,9 @@ resources.js           /events, /trigger, /webhook, /claim, /heartbeat, /complet
 src/router.js          the event router: direct routes, subscription rules, fan-out, unrouted events
 src/queue.js           enqueue, claim, heartbeat, complete, retries, dead-letter, lease reaping
 src/tick.js            publishes due cron runs as events and reaps expired leases, once per cluster
-src/localWorker.js     in-process worker for predefined jobs
+src/localWorker.js     Harper job worker: on the queue node, or on a job node claiming over HTTP
 src/handlers.js        predefined handlers (echo, flaky, alwaysFails, cleanupFinishedJobs)
 worker/external-worker.mjs   sample external worker
+docs/architecture.svg  the architecture chart above
 test/                  end-to-end and concurrency tests
 ```
