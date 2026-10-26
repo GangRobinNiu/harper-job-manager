@@ -1,0 +1,17 @@
+{
+	"name": "harper-job-manager",
+	"version": "0.1.0",
+	"description": "A small multi-tenant job manager on Harper: cron, webhook/API, predefined, and external worker jobs with leases, retries, and a dead-letter state.",
+	"type": "module",
+	"license": "MIT",
+	"scripts": {
+		"dev": "harper dev .",
+		"start": "harper run .",
+		"worker": "node worker/external-worker.mjs",
+		"test:e2e": "node test/e2e.mjs",
+		"test:concurrency": "node test/concurrency.mjs"
+	},
+	"dependencies": {
+		"cron-parser": "5.4.0"
+	}
+}

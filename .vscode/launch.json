@@ -1,0 +1,47 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "Harper: start dev + attach",
+			"type": "node",
+			"request": "attach",
+			"port": 9229,
+			"preLaunchTask": "harper: dev",
+			"restart": true,
+			"skipFiles": ["<node_internals>/**", "**/node_modules/harper/**"]
+		},
+		{
+			"name": "Harper: attach (already running)",
+			"type": "node",
+			"request": "attach",
+			"port": 9229,
+			"restart": true,
+			"skipFiles": ["<node_internals>/**", "**/node_modules/harper/**"]
+		},
+		{
+			"name": "External worker",
+			"type": "node",
+			"request": "launch",
+			"program": "${workspaceFolder}/worker/external-worker.mjs",
+			"env": { "QUEUES": "data-loader,generic" },
+			"console": "integratedTerminal",
+			"skipFiles": ["<node_internals>/**"]
+		},
+		{
+			"name": "Test: e2e",
+			"type": "node",
+			"request": "launch",
+			"program": "${workspaceFolder}/test/e2e.mjs",
+			"console": "integratedTerminal",
+			"skipFiles": ["<node_internals>/**"]
+		},
+		{
+			"name": "Test: concurrency",
+			"type": "node",
+			"request": "launch",
+			"program": "${workspaceFolder}/test/concurrency.mjs",
+			"console": "integratedTerminal",
+			"skipFiles": ["<node_internals>/**"]
+		}
+	]
+}

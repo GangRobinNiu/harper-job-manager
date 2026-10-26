@@ -1,0 +1,18 @@
+# REST interface for exported tables and resources
+rest: true
+
+# Tables
+graphqlSchema:
+  files: 'schema.graphql'
+
+# Custom endpoints: /trigger, /claim, /heartbeat, /complete
+jsResource:
+  files: 'resources.js'
+
+# Harper's built-in scheduler runs this tick once per cluster (leader-elected).
+# The tick does not run jobs. It only enqueues due cron jobs and reaps expired leases.
+scheduler:
+  jobs:
+    - name: job-manager-tick
+      interval: 5s
+      handler: ./src/tick.js#tick

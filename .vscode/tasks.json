@@ -1,0 +1,20 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "harper: dev",
+			"type": "npm",
+			"script": "dev",
+			"isBackground": true,
+			"problemMatcher": {
+				"owner": "harper",
+				"pattern": { "regexp": "^__never_matches__$" },
+				"background": {
+					"activeBegins": true,
+					"beginsPattern": "^.",
+					"endsPattern": "Harper successfully started"
+				}
+			}
+		}
+	]
+}

@@ -1,0 +1,94 @@
+# What a job is: one per tenant solution or integration.
+type JobDefinition @table(database: "jobs") @export {
+	id: ID @primaryKey
+	name: String
+	tenant: String @indexed
+	# Which queue its runs go on: a dedicated one ("data-loader") or the shared "generic" one.
+	# Runs on the "local" queue are executed inside Harper by a predefined handler.
+	queue: String! @indexed
+	# Local handler name ("echo", "flaky") or, for external workers, an image reference.
+	handler: String!
+	# Per-tenant settings passed to every run.
+	settings: Any
+	# Optional five-field cron schedule, evaluated in `timezone`.
+	cron: String
+	timezone: String
+	nextRunAt: Long @indexed
+	maxAttempts: Int
+	leaseMs: Long
+	priority: Int
+	enabled: Boolean @indexed
+}
+
+# One run of a definition.
+type Job @table(database: "jobs") @export {
+	id: ID @primaryKey
+	definitionId: String! @indexed
+	tenant: String @indexed
+	queue: String! @indexed
+	# cron | webhook | api | event
+	trigger: String
+	# The event that caused this run (see Event).
+	eventId: String @indexed
+	idempotencyKey: String
+	payload: Any
+	# Routing details: the event, the subscription that matched, and values read from the subject.
+	context: Any
+	# pending -> claimed -> completed, or back to pending for a retry, or dead after maxAttempts
+	status: String! @indexed
+	# Lower runs first.
+	priority: Int @indexed
+	attempts: Int
+	maxAttempts: Int
+	# Not claimable before this time (retry backoff).
+	runAfter: Long @indexed
+	leaseExpiresAt: Long @indexed
+	claimedBy: String
+	lastError: String
+	result: Any
+	createdAt: Date @createdTime
+	completedAt: Long
+}
+
+# Milestones for each run: the job's own log.
+type JobEvent @table(database: "jobs") @export {
+	id: ID @primaryKey
+	jobId: String! @indexed
+	at: Long
+	kind: String
+	message: String
+	data: Any
+}
+
+# Every event received, and where the router sent it. Unrouted events are the router's dead letter.
+type Event @table(database: "jobs") @export {
+	id: ID @primaryKey
+	# The id the publisher sent (the primary key is a URL-safe form of it).
+	sourceId: String @indexed
+	type: String! @indexed
+	source: String
+	subject: String
+	data: Any
+	# routed | unrouted
+	status: String! @indexed
+	# [{ subscriptionId, definitionId, jobId, deduplicated }]
+	routedTo: Any
+	error: String
+	receivedAt: Long @indexed
+}
+
+# A routing rule, like an Event Grid subscription: which events go to which job definition.
+type EventSubscription @table(database: "jobs") @export {
+	id: ID @primaryKey
+	# Event types this rule accepts, e.g. ["storage.blob.created"].
+	eventTypes: Any
+	# Optional filters on the event subject.
+	subjectBeginsWith: String
+	# Regular expression with named groups, e.g. ^/blobs/(?<tenant>[^/]+)/(?<jobType>[^/]+)/
+	subjectPattern: String
+	# Either a fixed definition, or a template filled from the named groups: "{tenant}-{jobType}".
+	definitionId: String
+	definitionTemplate: String
+	priority: Int
+	enabled: Boolean @indexed
+}
