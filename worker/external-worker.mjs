@@ -3,8 +3,8 @@
  *
  * It claims jobs from its queues over HTTP, runs them, sends milestones, and reports the
  * result. In production, `runJob` would start a container from `job.handler` (an image
- * reference) with the tenant's settings, for example as a Kubernetes Job, the way the
- * Service Platform dispatcher did. Here it simulates the work so the flow can be tested.
+ * reference) with the tenant's settings, for example as a Kubernetes Job. Here it
+ * simulates the work so the flow can be tested.
  *
  * Usage:
  *   HARPER_URL=http://localhost:9926 QUEUES=data-loader,generic node worker/external-worker.mjs

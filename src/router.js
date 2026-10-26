@@ -1,15 +1,15 @@
 /**
- * The event router: this project's equivalent of Azure Event Grid.
+ * The event router: decides which jobs each event starts.
  *
  * Every way a job can start is an event published here: a file landing, a cron schedule,
  * a webhook, an API call. The router records the event, decides which job definitions it
  * should start, and enqueues one job per match. It does not hold work: the Job table is
- * the queue (Service Bus in the old design); the router only decides where work goes.
+ * the queue; the router only decides where work goes.
  *
  * Two ways to route:
  *   1. Direct: the event names its job definition (`definitionId`). Cron, webhooks, and API
  *      calls know who they are, so they use this.
- *   2. Subscriptions: rules match on event type and subject, like Event Grid subscriptions.
+ *   2. Subscriptions: rules match on event type and subject.
  *      A blob-created event only carries a file path, so a rule reads the tenant and job type
  *      from the path ("{tenant}/{jobType}/file.csv") and builds the definition id.
  *

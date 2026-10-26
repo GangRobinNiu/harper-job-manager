@@ -77,7 +77,7 @@ type Event @table(database: "jobs") @export {
 	receivedAt: Long @indexed
 }
 
-# A routing rule, like an Event Grid subscription: which events go to which job definition.
+# A routing rule: which events go to which job definition.
 type EventSubscription @table(database: "jobs") @export {
 	id: ID @primaryKey
 	# Event types this rule accepts, e.g. ["storage.blob.created"].

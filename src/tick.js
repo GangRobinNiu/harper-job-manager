@@ -2,8 +2,8 @@
  * The scheduler tick. Harper's built-in scheduler calls this every few seconds, once per
  * cluster (see `scheduler:` in config.yaml).
  *
- * The tick never runs a job. Like a Kubernetes CronJob that only publishes an event, it
- * publishes a "schedule.fired" event for each due cron run, and reaps expired leases.
+ * The tick never runs a job. It publishes a "schedule.fired" event for each due cron run,
+ * and reaps expired leases.
  * Every job, whatever started it, then goes through the same router, queue, retries,
  * and dead-letter handling.
  */

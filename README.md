@@ -7,22 +7,14 @@ A small multi-tenant job manager built as a Harper component. One queue model ha
 - **Harper jobs**: handlers that run inside Harper, on the queue node or on dedicated Harper job nodes
 - **Custom integration jobs**: run by external workers that claim them over HTTP, for example to start a container image
 
-Every start is an event. An event router (the equivalent of Azure Event Grid) decides which jobs each event starts. Every job, whatever started it, then gets the same priorities, leases, retries with backoff, a dead-letter state, and a milestone log.
+Every start is an event. An event router decides which jobs each event starts. Every job, whatever started it, then gets the same priorities, leases, retries with backoff, a dead-letter state, and a milestone log.
 
 ## How it works
 
 ![Architecture: event sources publish to the router on the Harper queue node, which enqueues jobs into queues in the Job table; the queue node's Harper worker runs the internal local queue, and Harper job nodes claim the other queues over HTTP](docs/architecture.svg)
 
-| Old Service Platform (Azure) | Here (Harper) |
-| --- | --- |
-| Event Grid: routes events by type and subject | `src/router.js` with `EventSubscription` rules |
-| Service Bus queues, one per job type | `Job` table with a `queue` field |
-| Dispatcher plus KEDA, starting a Kubernetes Job per message | Harper job nodes running handlers, claiming over `/claim` (Kubernetes jobs are in the backlog) |
-| Kubernetes CronJob publishing an event | Harper's built-in scheduler running the tick, which publishes `schedule.fired` |
-| Event Hub plus milestone logger plus Cosmos DB | `JobEvent` and `Job` tables, streamed live by Harper |
-
 - **Everything is an event.** The cron tick, API calls, webhooks, and storage notifications all publish events to the router. Retries, dead-lettering, and monitoring are built once and apply to every job.
-- **Routing like Event Grid.** Sources that know their job (cron, API, webhooks) name it in the event. Sources that don't, like a "blob created" notification, are matched by `EventSubscription` rules on event type and subject. A rule can read the tenant and job type from the file path, e.g. `^/blobs/(?<tenant>[^/]+)/(?<jobType>[^/]+)/` with the template `{tenant}-{jobType}`. One event can match several rules (fan-out), and an event that matches nothing is kept as `unrouted`.
+- **Routing by rules.** Sources that know their job (cron, API, webhooks) name it in the event. Sources that don't, like a "blob created" notification, are matched by `EventSubscription` rules on event type and subject. A rule can read the tenant and job type from the file path, e.g. `^/blobs/(?<tenant>[^/]+)/(?<jobType>[^/]+)/` with the template `{tenant}-{jobType}`. One event can match several rules (fan-out), and an event that matches nothing is kept as `unrouted`.
 - **Events say who and what; definitions say how.** The image comes from the job definition, so an upgrade is one settings change. An event can pin `imageVersion` to test a new image on one tenant or roll back.
 - **Atomic claims.** `tryClaim` takes Harper's record lock (`Table.lock`) before checking and updating a job, so competing workers on any thread never claim the same job.
 - **Leases, not acknowledgments.** A claim comes with a lease. Workers extend it with `/heartbeat`. If a worker dies, the scheduler tick reaps the expired lease and retries the job.
@@ -57,7 +49,7 @@ curl -X PUT localhost:9926/JobDefinition/nightly-cleanup -H 'content-type: appli
   -d '{"id":"nightly-cleanup","enabled":true,"queue":"local","handler":"cleanupFinishedJobs","cron":"0 2 * * *","timezone":"America/Los_Angeles","settings":{"olderThanHours":72}}'
 ```
 
-Route storage events by path (the Event Grid part):
+Route storage events by path:
 
 ```bash
 # Rule: any new file under {tenant}/{jobType}/ starts the definition "{tenant}-{jobType}"
@@ -147,14 +139,14 @@ Results on Harper 5.3.4 with 4 worker threads:
 - **Scheduling granularity.** The tick runs every 5 seconds, so cron runs and lease expiry are accurate to about 5 seconds.
 - **No per-worker authorization.** Any authenticated worker can claim from any queue it names. Production would give each worker a role limited to its queues.
 - **Simulated external work.** The sample worker simulates running `job.handler`. A real one would start that container image, for example as a Kubernetes Job.
-- **Synchronous routing.** The router enqueues jobs during the publish call, so a publisher gets a result right away; Event Grid instead accepts the event and delivers it with retries. If a job definition is missing, the event is still recorded with the error.
+- **Synchronous routing.** The router enqueues jobs during the publish call, so a publisher gets a result right away, but a publish is not retried if enqueueing fails partway. If a job definition is missing, the event is still recorded with the error.
 - **Cleanup is a job.** Old jobs and events are removed by the `cleanupFinishedJobs` handler; schedule it with a cron definition.
 
 ## Backlog
 
 - **Kubernetes jobs.** Run container jobs as Kubernetes Jobs, for work that is not JavaScript or that needs per-job CPU and memory limits. Planned shape:
   - Add `runtime: "harper" | "kubernetes"` to `JobDefinition` (default `harper`). For `kubernetes`, `handler` is an image reference.
-  - A dispatcher claims `kubernetes` jobs, creates a Kubernetes Job from the image with the tenant settings, heartbeats while it runs, and completes the job when the pod finishes. It replaces the sample external worker and the old KEDA processors.
+  - A dispatcher claims `kubernetes` jobs, creates a Kubernetes Job from the image with the tenant settings, heartbeats while it runs, and completes the job when the pod finishes. It replaces the sample external worker.
   - Routing, queues, leases, retries, dead-lettering, and milestones stay shared, so moving a job between Harper and Kubernetes is a definition change.
 - **MQTT wake-up for job nodes.** Today each job node polls `/claim` every second, so an idle cluster still sends a steady stream of empty claims, and a new job waits up to a second. Build this when there are many job nodes or queues, or a job type where pickup speed matters. Planned shape:
   - Add a `QueueSignal` table with one record per queue. Enqueue and retry touch the queue's record, and Harper publishes the change over MQTT. Workers do not subscribe to `Job` itself, because every heartbeat updates it.

@@ -162,7 +162,7 @@ await test('Expired lease: job is retried, the late worker is rejected, then it 
 	assert.match(job.lastError, /Lease expired/);
 });
 
-// ---------- event router (Event Grid equivalent) ----------
+// ---------- event router ----------
 const container = `/containers/input-${RUN}/blobs/`;
 const tenantLoader = await define(`acme-data-loader-${RUN}`, { tenant: 'acme', queue: `dl-${RUN}`, handler: 'jfrog/acme/data-loader:1.4' });
 const auditLog = await define(`audit-log-${RUN}`, { queue: 'local', handler: 'echo' });
