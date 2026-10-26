@@ -36,6 +36,7 @@ export function backoffMs(attempts) {
 
 export async function recordEvent(jobId, kind, message, data) {
 	await JobEvent.put({ id: `${jobId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`, jobId, at: Date.now(), kind, message, data });
+	logger.info(`job-manager: ${jobId} ${kind}: ${message}`);
 }
 
 /**

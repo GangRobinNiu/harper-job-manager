@@ -34,6 +34,8 @@ npm install
 npm run dev                 # Harper on http://localhost:9926
 ```
 
+For a guided tour with copy-paste commands and the expected results, see [docs/walkthrough.md](docs/walkthrough.md).
+
 Define jobs (the tables are exposed over REST):
 
 ```bash
@@ -219,5 +221,6 @@ src/localWorker.js     Harper job worker: on the queue node, or on a job node cl
 src/handlers.js        predefined handlers (echo, flaky, sleep, alwaysFails, cleanupFinishedJobs)
 worker/external-worker.mjs   sample external worker
 docs/architecture.svg  the architecture chart above
+docs/walkthrough.md    five copy-paste demos: first job, a running job, retries, routing, cron
 test/                  end-to-end and concurrency tests
 ```

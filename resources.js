@@ -12,7 +12,7 @@
  * GET /Job/?status=dead lists the dead-letter jobs, and clients can subscribe to
  * Job changes over WebSocket, SSE, or MQTT for live status.
  */
-import { Resource, server } from 'harper';
+import { Resource, databases, server } from 'harper';
 import { claim, heartbeat, complete } from './src/queue.js';
 import { publish } from './src/router.js';
 import { startLocalWorker } from './src/localWorker.js';
@@ -44,7 +44,9 @@ function triggerResource(trigger) {
 					{ trigger, idempotencyKey: key }
 				);
 				const [{ jobId, deduplicated }] = routedTo;
-				return json(deduplicated ? 200 : 202, { jobId, status: 'pending', deduplicated });
+				// A duplicate points at the existing job, which may already be running or finished.
+				const status = deduplicated ? (await databases.jobs.Job.get(jobId))?.status : 'pending';
+				return json(deduplicated ? 200 : 202, { jobId, status, deduplicated });
 			} catch (error) {
 				return json(error.statusCode ?? 500, { error: error.message });
 			}
