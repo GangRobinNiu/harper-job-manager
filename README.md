@@ -36,6 +36,8 @@ npm run dev                 # Harper on http://localhost:9926
 
 For a guided tour with copy-paste commands and the expected results, see [docs/walkthrough.md](docs/walkthrough.md).
 
+**Admin UI:** open http://localhost:9926/admin_ui/ to watch jobs live: counts by status, the newest jobs with filters by status, tenant, and queue, each job's timeline and result, unrouted events, and job definitions. It is an internal, read-only page that polls the REST tables every 3 seconds.
+
 Define jobs (the tables are exposed over REST):
 
 ```bash
@@ -184,6 +186,7 @@ The chosen direction is a **primary queue node with a standby** (see the backlog
 - **One queue node.** In core Harper, `Table.lock` is exclusive across every thread of one node, not across a cluster, so all claims go through one queue node. That node is a single point of failure: while it is down, running jobs keep going and hold their results, but nothing new is accepted or claimed. See the standby queue node in the backlog.
 - **Scheduling granularity.** The tick runs every 5 seconds, so cron runs and lease expiry are accurate to about 5 seconds.
 - **No per-worker authorization.** Any authenticated worker can claim from any queue it names. Production would give each worker a role limited to its queues.
+- **The admin UI is internal.** Its files are public, like all static files, and its data comes from the REST tables. On localhost, Harper allows that without signing in (`authorizeLocal`). Anywhere else, requests need Harper credentials, and anyone with them sees every tenant's jobs.
 - **Simulated external work.** The sample worker simulates running `job.handler`. A real one would start that container image, for example as a Kubernetes Job.
 - **Synchronous routing.** The router enqueues jobs during the publish call, so a publisher gets a result right away, but a publish is not retried if enqueueing fails partway. If a job definition is missing, the event is still recorded with the error.
 - **Cleanup is a job.** Old jobs and events are removed by the `cleanupFinishedJobs` handler; schedule it with a cron definition.
@@ -206,7 +209,10 @@ The chosen direction is a **primary queue node with a standby** (see the backlog
   - Claiming stays on `/claim` with `Table.lock`. MQTT sends every message to every subscriber, so several nodes may wake at once, and the lock still gives each job to one node.
   - Keep a slow fallback poll (about 30 seconds) for messages missed during a disconnect and for retries whose `runAfter` comes due with no new signal. The scheduler tick could also signal queues whose delayed jobs just came due.
   - Prior art: the static prerender template publishes `queue_status/producer` (`queued` or `empty`) and its workers claim only when it says `queued`.
-- **Web UI.** A page for operators to manage job definitions, watch jobs and milestones live, and inspect or rerun dead-letter jobs. Most of it needs no new backend: it reads the REST-exported tables and subscribes to `Job` and `JobEvent` changes over SSE or WebSocket. Rerunning a dead job needs one new endpoint that resets it to `pending`.
+- **Admin UI, next steps.** The internal, read-only admin UI (`/admin_ui/`) is done. Still to build:
+  - **Operator actions:** rerun a dead job (needs one new endpoint that resets it to `pending`), trigger a job, and enable or disable a definition.
+  - **A customer-facing view.** Not safe on today's API: the REST tables are exported to any signed-in caller with no tenant filtering, so one tenant could read another's jobs, payloads, and definition `settings`. It needs a status endpoint scoped to the caller's tenant, returning only safe fields (status, times, milestone messages), with customer authentication.
+  - **Live push instead of polling.** A table-wide SSE subscription replays every row on connect, so the page polls instead. Push would need a narrower feed, such as the `QueueSignal` table from the MQTT item.
 
 ## Files
 
@@ -222,5 +228,6 @@ src/handlers.js        predefined handlers (echo, flaky, sleep, alwaysFails, cle
 worker/external-worker.mjs   sample external worker
 docs/architecture.svg  the architecture chart above
 docs/walkthrough.md    five copy-paste demos: first job, a running job, retries, routing, cron
+admin_ui/              internal admin UI, served at /admin_ui/ by Harper's static plugin
 test/                  end-to-end and concurrency tests
 ```

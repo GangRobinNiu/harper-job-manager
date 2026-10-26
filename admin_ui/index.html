@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Job Manager Admin</title>
+	<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+	<header class="bar">
+		<div class="brand">
+			<h1>Job Manager</h1>
+			<span class="env">admin · internal · read-only</span>
+		</div>
+		<div class="live">
+			<span id="live-dot" class="dot" aria-hidden="true"></span>
+			<span id="live-text">Connecting…</span>
+			<button id="pause" type="button">Pause</button>
+		</div>
+	</header>
+
+	<div id="error" class="error" hidden></div>
+
+	<main>
+		<section class="tiles" aria-label="Job counts">
+			<button class="tile" data-status="pending" type="button"><span class="tile-label">Pending</span><span class="tile-value" id="count-pending">–</span></button>
+			<button class="tile" data-status="claimed" type="button"><span class="tile-label">Running</span><span class="tile-value" id="count-claimed">–</span></button>
+			<button class="tile" data-status="completed" type="button"><span class="tile-label">Completed</span><span class="tile-value" id="count-completed">–</span></button>
+			<button class="tile tile-dead" data-status="dead" type="button"><span class="tile-label">Dead</span><span class="tile-value" id="count-dead">–</span></button>
+			<button class="tile tile-dead" data-tab="events" type="button"><span class="tile-label">Unrouted events</span><span class="tile-value" id="count-unrouted">–</span></button>
+		</section>
+
+		<nav class="tabs" role="tablist">
+			<button role="tab" data-tab="jobs" type="button">Jobs</button>
+			<button role="tab" data-tab="events" type="button">Unrouted events</button>
+			<button role="tab" data-tab="definitions" type="button">Definitions</button>
+		</nav>
+
+		<section id="tab-jobs" class="panel">
+			<div class="filters">
+				<div class="chips" role="group" aria-label="Status">
+					<button class="chip" data-filter-status="" type="button">All</button>
+					<button class="chip" data-filter-status="pending" type="button">Pending</button>
+					<button class="chip" data-filter-status="claimed" type="button">Running</button>
+					<button class="chip" data-filter-status="completed" type="button">Completed</button>
+					<button class="chip" data-filter-status="dead" type="button">Dead</button>
+				</div>
+				<label>Tenant <select id="filter-tenant"><option value="">All</option></select></label>
+				<label>Queue <select id="filter-queue"><option value="">All</option></select></label>
+				<label class="grow">Search <input id="filter-search" type="search" placeholder="Job id or definition"></label>
+			</div>
+			<div class="table-wrap">
+				<table>
+					<thead>
+						<tr><th>Job</th><th>Status</th><th>Tenant</th><th>Queue</th><th>Trigger</th><th class="num">Attempts</th><th>Created</th><th>Finished</th></tr>
+					</thead>
+					<tbody id="jobs-body"></tbody>
+				</table>
+				<p id="jobs-empty" class="empty" hidden>No jobs match these filters.</p>
+			</div>
+			<p class="note">Shows the newest 200 matching jobs. Refreshes every 3 seconds.</p>
+		</section>
+
+		<section id="tab-events" class="panel" hidden>
+			<div class="table-wrap">
+				<table>
+					<thead><tr><th>Event</th><th>Type</th><th>Subject</th><th>Received</th><th>Why</th></tr></thead>
+					<tbody id="events-body"></tbody>
+				</table>
+				<p id="events-empty" class="empty" hidden>No unrouted events. Every event matched a job.</p>
+			</div>
+		</section>
+
+		<section id="tab-definitions" class="panel" hidden>
+			<div class="table-wrap">
+				<table>
+					<thead><tr><th>Definition</th><th>Enabled</th><th>Tenant</th><th>Queue</th><th>Handler</th><th>Schedule</th><th>Next run</th></tr></thead>
+					<tbody id="definitions-body"></tbody>
+				</table>
+				<p id="definitions-empty" class="empty" hidden>No job definitions yet.</p>
+			</div>
+		</section>
+	</main>
+
+	<aside id="detail" class="detail" hidden aria-labelledby="detail-title">
+		<div class="detail-head">
+			<h2 id="detail-title">Job</h2>
+			<button id="detail-close" type="button" aria-label="Close">Close</button>
+		</div>
+		<div id="detail-body"></div>
+	</aside>
+
+	<script src="app.js"></script>
+</body>
+</html>

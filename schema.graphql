@@ -46,7 +46,8 @@ type Job @table(database: "jobs") @export {
 	claimedBy: String
 	lastError: String
 	result: Any
-	createdAt: Date @createdTime
+	# Indexed so lists (like the admin UI) can show the newest jobs first.
+	createdAt: Date @createdTime @indexed
 	completedAt: Long
 }
 

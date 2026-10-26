@@ -5,6 +5,11 @@ rest: true
 graphqlSchema:
   files: 'schema.graphql'
 
+# Admin UI at /admin_ui/ (internal, read-only; reads the REST tables above)
+static:
+  files: 'admin_ui/**'
+  urlPath: 'admin_ui'
+
 # Custom endpoints: /trigger, /claim, /heartbeat, /complete
 jsResource:
   files: 'resources.js'

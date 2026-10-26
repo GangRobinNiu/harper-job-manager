@@ -12,7 +12,7 @@ Five short demos. Each code block can be pasted into a terminal as a whole.
   ```
 
 - **Terminal 2:** run the demo commands. Use Git Bash on Windows. In Windows PowerShell, `curl` is a different command.
-- **Optional:** open Harper Studio at http://localhost:9925, database `jobs`, and refresh the `Job` and `JobEvent` tables after each step.
+- **Watch it:** open the admin UI at http://localhost:9926/admin_ui/. It refreshes every 3 seconds, so each demo's jobs appear and change state on their own. Click a job to see its timeline. (Harper Studio at http://localhost:9925 shows the raw tables.)
 
 Every demo uses the `local` queue, which the Harper worker always serves. Idempotency keys (`try-1`, `s1`, ...) must be new for each run: if a key was used before, the trigger answers `"deduplicated": true` and starts nothing. Change the key to run a demo again.
 
