@@ -18,6 +18,28 @@ import { claim, heartbeat, complete } from './queue.js';
 import { handlers } from './handlers.js';
 
 const POLL_MS = 1_000;
+const HEARTBEAT_MS = 20_000;
+// How long a finished job keeps trying to report its result while the queue node is unreachable.
+const REPORT_RETRY_FOR_MS = 30 * 60_000;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Keep sending until the queue node answers. A network error or a 5xx means "not delivered";
+ * any other answer, including 409 (the lease was lost), is final.
+ */
+async function untilDelivered(label, send) {
+	const giveUpAt = Date.now() + REPORT_RETRY_FOR_MS;
+	for (let delay = 1_000; ; delay = Math.min(delay * 2, 30_000)) {
+		try {
+			return await send();
+		} catch (error) {
+			if (Date.now() + delay > giveUpAt) throw error;
+			logger.warn(`job-manager worker: ${label} not delivered (${error.message}), retrying in ${delay / 1000}s`);
+			await sleep(delay);
+		}
+	}
+}
 
 /** Claim, heartbeat, and complete over HTTP, for a job node that is not the queue node. */
 function remoteQueue(baseUrl) {
@@ -28,6 +50,7 @@ function remoteQueue(baseUrl) {
 	const call = async (path, body) => {
 		const response = await fetch(`${baseUrl.replace(/\/$/, '')}/${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
 		const data = await response.json().catch(() => ({}));
+		if (response.status >= 500) throw new Error(`${path} returned ${response.status}: ${data?.error ?? ''}`);
 		return { status: response.status, data };
 	};
 	return {
@@ -77,22 +100,24 @@ export function startLocalWorker() {
 }
 
 async function run(queue, workerId, job) {
+	const report = (outcome) => untilDelivered(`complete ${job.id}`, () => queue.complete({ workerId, jobId: job.id, ...outcome }));
 	const handler = handlers[job.handler];
-	if (!handler) {
-		await queue.complete({ workerId, jobId: job.id, ok: false, error: `No Harper handler named "${job.handler}"` });
-		return;
-	}
+	if (!handler) return report({ ok: false, error: `No Harper handler named "${job.handler}"` });
 
-	const milestone = (message, data) => queue.heartbeat({ workerId, jobId: job.id, milestone: message, data });
-	const keepAlive = setInterval(() => {
-		queue.heartbeat({ workerId, jobId: job.id }).catch((error) => logger.warn(`job-manager worker: heartbeat for ${job.id} failed: ${error.message}`));
-	}, 20_000);
+	// Milestones and heartbeats are best effort: if the queue node is briefly down, the next
+	// heartbeat extends the lease, and the job itself must not fail because of it.
+	const beat = (body) => queue.heartbeat({ workerId, jobId: job.id, ...body }).catch((error) => logger.warn(`job-manager worker: heartbeat for ${job.id} failed: ${error.message}`));
+	const milestone = (message, data) => beat({ milestone: message, data });
+	const keepAlive = setInterval(beat, HEARTBEAT_MS);
+
+	// Run the job first, then report. A failed report is retried; it is never mistaken for a failed job.
+	let outcome;
 	try {
-		const result = await handler(job, job.settings ?? {}, { milestone });
-		await queue.complete({ workerId, jobId: job.id, ok: true, result });
+		outcome = { ok: true, result: await handler(job, job.settings ?? {}, { milestone }) };
 	} catch (error) {
-		await queue.complete({ workerId, jobId: job.id, ok: false, error: error.message });
+		outcome = { ok: false, error: error.message };
 	} finally {
 		clearInterval(keepAlive);
 	}
+	await report(outcome);
 }

@@ -9,7 +9,7 @@
  */
 import { databases, logger } from 'harper';
 import { CronExpressionParser } from 'cron-parser';
-import { reapExpiredLeases } from './queue.js';
+import { reapExpiredLeases, DEFAULTS } from './queue.js';
 import { publish } from './router.js';
 
 const { JobDefinition } = databases.jobs;
@@ -60,8 +60,21 @@ export async function enqueueDueCronJobs(now = Date.now()) {
 	return count;
 }
 
+// After a restart every lease looks expired, because no heartbeats could arrive while this node
+// was down. Wait one default lease (workers heartbeat every 20s) so they can reconnect first.
+const REAP_GRACE_MS = Number(process.env.REAP_GRACE_MS ?? DEFAULTS.leaseMs);
+const startedAt = Date.now();
+let warnedJobNode = false;
+
 export async function tick() {
+	// Cron and lease reaping belong to the queue node. A job node only gets here if it joined
+	// the queue node's cluster and won the scheduler election, which leaves the queue unticked.
+	if (process.env.JOB_MANAGER_URL) {
+		if (!warnedJobNode) logger.error('job-manager: this job node is the scheduler leader, so cron runs and lease reaping are not running. Job nodes must not join the queue node\'s cluster.');
+		warnedJobNode = true;
+		return;
+	}
 	const enqueued = await enqueueDueCronJobs();
-	const reaped = await reapExpiredLeases();
+	const reaped = Date.now() - startedAt >= REAP_GRACE_MS ? await reapExpiredLeases() : 0;
 	if (enqueued || reaped) logger.info(`job-manager tick: ${enqueued} cron runs enqueued, ${reaped} leases reaped`);
 }

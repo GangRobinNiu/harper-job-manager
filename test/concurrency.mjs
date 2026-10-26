@@ -16,7 +16,7 @@ const post = (path, body, extra = {}) => fetch(BASE + path, { method: 'POST', he
 
 const id = `stress-${run}`;
 await fetch(`${BASE}/JobDefinition/${id}`, { method: 'PUT', headers, body: JSON.stringify({ id, enabled: true, queue: id, handler: 'jfrog/demo/noop:1.0' }) });
-await Promise.all(Array.from({ length: JOBS }, (_, i) => post(`/trigger/${id}`, { i })));
+await Promise.all(Array.from({ length: JOBS }, (_, i) => post(`/trigger/${id}`, { i }, { 'idempotency-key': `job-${i}` })));
 
 const claims = new Map();
 const started = Date.now();

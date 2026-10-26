@@ -45,6 +45,8 @@ async function define(id, definition) {
 	return id;
 }
 
+// Triggers require an Idempotency-Key; tests that don't care about deduplication send a fresh one.
+const trigger = (definitionId, body, key = crypto.randomUUID()) => http('POST', `/trigger/${definitionId}`, body, { 'idempotency-key': key });
 const claim = (workerId, queues, limit = 1, leaseMs) => http('POST', '/claim', { workerId, queues, limit, leaseMs });
 const complete = (workerId, jobId, ok, extra = {}) => http('POST', '/complete', { workerId, jobId, ok, ...extra });
 
@@ -66,7 +68,7 @@ const hang = await define(`initech-hang-${RUN}`, { tenant: 'initech', queue: `sl
 const scheduled = await define(`acme-nightly-${RUN}`, { tenant: 'acme', queue: 'local', handler: 'echo', cron: '* * * * *', timezone: 'America/Los_Angeles' });
 
 await test('API trigger runs a predefined job inside Harper', async () => {
-	const { status, data } = await http('POST', `/trigger/${echo}`, { hello: 'world' });
+	const { status, data } = await trigger(echo, { hello: 'world' });
 	assert.equal(status, 202);
 	const job = await waitFor('echo completed', async () => {
 		const j = await getJob(data.jobId);
@@ -87,8 +89,13 @@ await test('Webhook with an Idempotency-Key is deduplicated', async () => {
 	assert.equal((await jobsFor(loader)).length, 1);
 });
 
+await test('Trigger without an Idempotency-Key is rejected', async () => {
+	const { status } = await http('POST', `/trigger/${echo}`, {});
+	assert.equal(status, 400);
+});
+
 await test('Unknown definition returns 404', async () => {
-	const { status } = await http('POST', `/trigger/nope-${RUN}`, {});
+	const { status } = await trigger(`nope-${RUN}`, {});
 	assert.equal(status, 404);
 });
 
@@ -105,7 +112,7 @@ await test('External worker claims from its dedicated queue, records milestones,
 });
 
 await test('Competing workers never claim the same job (40 jobs, 4 workers)', async () => {
-	await Promise.all(Array.from({ length: 40 }, (_, i) => http('POST', `/trigger/${generic}`, { n: i })));
+	await Promise.all(Array.from({ length: 40 }, (_, i) => trigger(generic, { n: i })));
 	const seen = new Map();
 	const worker = async (workerId) => {
 		for (;;) {
@@ -124,7 +131,7 @@ await test('Competing workers never claim the same job (40 jobs, 4 workers)', as
 });
 
 await test('Flaky predefined job retries with backoff, then succeeds', async () => {
-	const { data } = await http('POST', `/trigger/${flaky}`, {});
+	const { data } = await trigger(flaky, {});
 	const job = await waitFor('flaky completed', async () => {
 		const j = await getJob(data.jobId);
 		return j?.status === 'completed' && j;
@@ -134,7 +141,7 @@ await test('Flaky predefined job retries with backoff, then succeeds', async () 
 });
 
 await test('Job that always fails ends in the dead-letter state after maxAttempts', async () => {
-	const { data } = await http('POST', `/trigger/${broken}`, {});
+	const { data } = await trigger(broken, {});
 	const job = await waitFor('broken dead', async () => {
 		const j = await getJob(data.jobId);
 		return j?.status === 'dead' && j;
@@ -145,7 +152,7 @@ await test('Job that always fails ends in the dead-letter state after maxAttempt
 });
 
 await test('Expired lease: job is retried, the late worker is rejected, then it goes dead', async () => {
-	const { data } = await http('POST', `/trigger/${hang}`, {});
+	const { data } = await trigger(hang, {});
 	const [first] = (await claim('w-stuck', [`slow-${RUN}`])).data;
 	assert.equal(first.id, data.jobId);
 	// The worker hangs past its 2s lease; the scheduler tick (every 5s) reaps it.

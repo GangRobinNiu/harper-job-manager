@@ -20,6 +20,13 @@ export const handlers = {
 		return { succeededOnAttempt: job.attempts };
 	},
 
+	/** Waits `settings.ms` (default 5s), for testing long-running jobs and outages. */
+	async sleep(job, settings, { milestone }) {
+		await milestone('Sleeping');
+		await new Promise((resolve) => setTimeout(resolve, settings.ms ?? 5_000));
+		return { sleptMs: settings.ms ?? 5_000 };
+	},
+
 	/** Always fails, to show the dead-letter state. */
 	async alwaysFails() {
 		throw new Error('This job always fails');

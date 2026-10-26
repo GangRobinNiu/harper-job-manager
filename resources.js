@@ -28,11 +28,13 @@ function triggerResource(trigger) {
 		static async post(target, data, context) {
 			const definitionId = target?.id;
 			if (!definitionId) return json(400, { error: 'Missing job definition id in the path' });
-			const key = context?.headers?.get?.('idempotency-key') ?? undefined;
+			const key = context?.headers?.get?.('idempotency-key');
+			// Required so a caller can safely retry: a retry with the same key lands on the same job.
+			if (!key) return json(400, { error: 'An Idempotency-Key header is required, so a retried request cannot create a second job' });
 			try {
 				const { routedTo } = await publish(
 					{
-						id: key ? `${definitionId}:${key}` : undefined,
+						id: `${definitionId}:${key}`,
 						type: `job.${trigger}`,
 						source: `/${trigger}`,
 						subject: `/definitions/${definitionId}`,

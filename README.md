@@ -20,9 +20,10 @@ Every start is an event. An event router decides which jobs each event starts. E
 - **Leases, not acknowledgments.** A claim comes with a lease. Workers extend it with `/heartbeat`. If a worker dies, the scheduler tick reaps the expired lease and retries the job.
 - **Fencing.** Only the worker holding the current lease can complete a job. A worker that stalled past its lease gets `409` and its late result is discarded.
 - **Retries with a limit.** Failures retry with exponential backoff (5s, 10s, 20s, up to 5 minutes). After `maxAttempts`, the job moves to `dead`: `GET /Job/?status=dead` is the dead-letter queue.
-- **Idempotency.** With an `Idempotency-Key` header, the job id is derived from the key, so a retried webhook lands on the same job. Cron runs use the scheduled time as the key, so a double fire during leader failover cannot run twice.
+- **Idempotency.** `/trigger` and `/webhook` require an `Idempotency-Key` header. The job id is derived from the key, so a caller can safely retry, for example after a timeout or an outage, and the retry lands on the same job. Cron runs use the scheduled time as the key, so a double fire during leader failover cannot run twice.
 - **Cluster-once scheduling.** The tick runs on Harper's built-in `scheduler` plugin, which elects one leader per cluster.
 - **Dedicated and shared queues.** A definition names its queue: a dedicated one for a high-volume solution (`data-loader`) or a shared `generic` one for custom integrations. Workers say which queues they serve.
+- **Outages pause work, they don't lose it.** If the queue node is unreachable when a job finishes, the Harper worker keeps the result and retries `/complete` with backoff (up to 30 minutes) until it is delivered, so the job is not run again. After a restart, the queue node waits one lease length before reaping expired leases, so workers can reconnect and heartbeat first.
 
 ## Run it
 
@@ -70,7 +71,8 @@ curl "localhost:9926/Event/?status=unrouted"     # events that matched nothing
 Trigger and watch:
 
 ```bash
-curl -X POST localhost:9926/trigger/acme-echo -H 'content-type: application/json' -d '{"hello":"world"}'
+curl -X POST localhost:9926/trigger/acme-echo -H 'content-type: application/json' \
+  -H 'idempotency-key: hello-1' -d '{"hello":"world"}'
 curl -X POST localhost:9926/webhook/acme-loader -H 'content-type: application/json' \
   -H 'idempotency-key: positions-2026-10-26' -d '{"file":"positions.csv"}'
 
@@ -93,6 +95,7 @@ The worker reads its settings from environment variables:
 | `JOB_CONCURRENCY` | `4` | Jobs run at once |
 | `JOB_MANAGER_URL` | unset | The queue node to claim from. Unset means this node is the queue node |
 | `JOB_MANAGER_USER`, `JOB_MANAGER_PASS` | unset | Credentials for the queue node |
+| `REAP_GRACE_MS` | `60000` | On the queue node: how long after startup to wait before reaping expired leases |
 
 On the queue node, the worker claims straight from the `Job` table. Light jobs can stay here:
 
@@ -106,6 +109,8 @@ Heavy jobs belong on **Harper job nodes**: separate Harper instances that run th
 JOB_MANAGER_URL=http://queue-node:9926 JOB_QUEUES=harper npm run dev
 ```
 
+Keep job nodes out of the queue node's Harper cluster; they only need HTTP access to it. Inside one cluster, the scheduler could elect a job node as its leader, and cron runs and lease reaping would stop. A job node that finds itself the leader logs an error saying so.
+
 The `local` queue is for internal use: job system maintenance such as `cleanupFinishedJobs`, which works on the queue node's own tables, and quick tests like `echo`. It only runs on the queue node: `/claim` refuses it, so no job node or external worker can take it. Tenant and solution jobs go on other queues. Harper jobs run in Node.js, without per-job CPU or memory limits, so a runaway job can affect other jobs on the same job node, but not the queue node.
 
 ## API
@@ -113,7 +118,7 @@ The `local` queue is for internal use: job system maintenance such as `cleanupFi
 | Endpoint | Body | Result |
 | --- | --- | --- |
 | `POST /events` | `{ id, type, source?, subject?, data?, definitionId? }` (CloudEvents shape) | `202` with where it was routed, or `200` with `status: "unrouted"` |
-| `POST /trigger/{definitionId}` | Job payload; optional `Idempotency-Key` header | `202` new job, `200` duplicate, `404` unknown definition |
+| `POST /trigger/{definitionId}` | Job payload; required `Idempotency-Key` header | `202` new job, `200` duplicate, `400` missing key, `404` unknown definition |
 | `POST /webhook/{definitionId}` | Same, recorded as trigger `webhook` | Same |
 | `POST /claim` | `{ workerId, queues: [...], limit, leaseMs? }` | Claimed jobs with `handler` and tenant `settings` |
 | `POST /heartbeat` | `{ workerId, jobId, milestone?, data?, extendMs? }` | `200`, or `409` if the worker lost the job |
@@ -124,18 +129,57 @@ Tables: `JobDefinition`, `Job`, `JobEvent`, `Event`, `EventSubscription` (see `s
 ## Tests
 
 ```bash
-node test/e2e.mjs           # 14 scenarios: triggers, routing, idempotency, retries, dead-letter, cron, leases, fencing
+node test/e2e.mjs           # 15 scenarios: triggers, routing, idempotency, retries, dead-letter, cron, leases, fencing
 node test/concurrency.mjs   # 300 jobs, 12 competing workers: each job claimed exactly once
 ```
 
 Results on Harper 5.3.4 with 4 worker threads:
 
-- All 14 end-to-end scenarios pass.
+- All end-to-end scenarios pass (15 as of the last run, on Harper 5.3.2 with 1 worker thread).
 - Concurrency, with `CLAIM_DELAY_MS=20` to widen the race window: with `Table.lock`, 300 of 300 jobs were claimed exactly once. With the lock replaced by a plain `get`, the same run claimed some jobs up to 12 times.
+
+## Scalability and availability
+
+### Where the work happens
+
+Jobs run on Harper job nodes, not on the queue node. The queue node only keeps the books: about a dozen small indexed reads and writes per job (enqueue, claim, complete, milestones), plus one write per heartbeat while a job runs. For scale, 1 million jobs a day averages about 12 jobs a second. Adding customers mostly means adding job nodes, which scale horizontally: give heavy tenants or solutions their own queue and their own job nodes.
+
+Job nodes hold no job state, so they suit an autoscaler. Scale each queue's job nodes on its pending count (`GET /Job/?queue=data-loader&status=pending`).
+
+### Where queue node load grows
+
+The queue node's load does not track the job count alone. Watch these:
+
+- **Bursts.** Many tenants with the same cron schedule are all published in the same 5-second tick. Spread schedules out or add a random offset.
+- **Heartbeats** grow with the number of jobs running at once, not the number started: 10,000 running jobs heartbeating every 20 seconds is 500 writes a second. Long jobs can heartbeat less often.
+- **Idle polling.** Every job node polls `/claim` once a second whether or not there is work. The MQTT wake-up in the backlog removes this.
+- **Table size.** `Job`, `Event`, and `JobEvent` grow until `cleanupFinishedJobs` removes old rows. Schedule it.
+
+Queue node throughput has not been load-tested yet. Measure it before relying on a ceiling.
+
+### Scaling steps, in order
+
+1. **One bigger queue node.** Add worker threads (`Table.lock` is safe across all threads of a node) and a larger machine. Claim in batches, and reduce idle polling.
+2. **Split queues across queue nodes.** Each queue has one owner node, so claims for a queue always happen in one place, and different queues live on different nodes.
+3. **Cells.** Run independent copies of the whole system and assign each tenant group to one. Cells scale without any cross-node locking and keep tenants isolated from each other's failures. See the backlog.
+
+### Availability
+
+The queue node is a single point of failure: `Table.lock` is exclusive within one node, so only one node can hand out jobs. While it is down:
+
+| | What happens |
+| --- | --- |
+| Running jobs | Keep running. Harper workers hold their results and retry `/complete` until it is delivered |
+| Heartbeats | Fail and are retried on the next interval. After a restart, reaping waits one lease length (`REAP_GRACE_MS`) so workers can heartbeat first |
+| New triggers and webhooks | Rejected. Callers retry with the same `Idempotency-Key`, so a retry never creates a second job |
+| Cron runs | Delayed until the node returns, then fire once. Missed occurrences are skipped |
+| Claims | None, so all queues pause |
+
+The chosen direction is a **primary queue node with a standby** (see the backlog): replicate to a standby and fail over behind one address, with exactly one node active at a time. Two active nodes would hand the same job to two workers. Because replication is asynchronous, a failover can run a job twice, so handlers must be safe to run twice. Cells limit how many tenants one failure affects, but they do not replace the standby: each cell still needs one.
 
 ## Limits of this MVP
 
-- **One node.** In core Harper, `Table.lock` is exclusive across every thread of one node, not across a cluster. For several nodes, pin each queue's claims to one node (the static prerender template pins workers to nodes for the same reason) or use cluster-wide locks where available.
+- **One queue node.** In core Harper, `Table.lock` is exclusive across every thread of one node, not across a cluster, so all claims go through one queue node. That node is a single point of failure: while it is down, running jobs keep going and hold their results, but nothing new is accepted or claimed. See the standby queue node in the backlog.
 - **Scheduling granularity.** The tick runs every 5 seconds, so cron runs and lease expiry are accurate to about 5 seconds.
 - **No per-worker authorization.** Any authenticated worker can claim from any queue it names. Production would give each worker a role limited to its queues.
 - **Simulated external work.** The sample worker simulates running `job.handler`. A real one would start that container image, for example as a Kubernetes Job.
@@ -144,6 +188,12 @@ Results on Harper 5.3.4 with 4 worker threads:
 
 ## Backlog
 
+- **Standby queue node.** Removes the single point of failure. Planned shape:
+  - Replicate the `jobs` database from the active queue node to a standby. Job nodes and callers reach the queue through one load balancer or DNS name, never a node address.
+  - Exactly one node is active at a time. Health checks move traffic to the standby when the active node fails. Two active nodes would hand the same job to two workers, because `Table.lock` does not span nodes, so failover must guarantee a single active node. The scheduler tick must also run only on the active node.
+  - Replication is asynchronous (confirm for the Harper version in use), so the standby may be a few seconds behind. A claim that did not replicate makes its job look `pending` again, so it can run twice: the original worker's late result gets `409`. Handlers must be safe to run twice. An enqueue that did not replicate is recovered when the caller retries with the same `Idempotency-Key`. Cron runs are deduplicated by their scheduled-time key.
+  - The outage handling already in place (result retries, the restart grace before reaping) is what makes a failover safe for running jobs.
+- **Cells.** Scale out by running several independent copies of the system, each with its own queue node, standby, and job nodes, and assigning each tenant group to a cell. A management layer on top places tenants and routes their events to the right cell. One cell's failure or overload never affects another.
 - **Kubernetes jobs.** Run container jobs as Kubernetes Jobs, for work that is not JavaScript or that needs per-job CPU and memory limits. Planned shape:
   - Add `runtime: "harper" | "kubernetes"` to `JobDefinition` (default `harper`). For `kubernetes`, `handler` is an image reference.
   - A dispatcher claims `kubernetes` jobs, creates a Kubernetes Job from the image with the tenant settings, heartbeats while it runs, and completes the job when the pod finishes. It replaces the sample external worker.
@@ -164,9 +214,9 @@ schema.graphql         JobDefinition, Job, JobEvent, Event, EventSubscription
 resources.js           /events, /trigger, /webhook, /claim, /heartbeat, /complete; starts the local worker
 src/router.js          the event router: direct routes, subscription rules, fan-out, unrouted events
 src/queue.js           enqueue, claim, heartbeat, complete, retries, dead-letter, lease reaping
-src/tick.js            publishes due cron runs as events and reaps expired leases, once per cluster
+src/tick.js            publishes due cron runs as events and reaps expired leases, on the queue node only
 src/localWorker.js     Harper job worker: on the queue node, or on a job node claiming over HTTP
-src/handlers.js        predefined handlers (echo, flaky, alwaysFails, cleanupFinishedJobs)
+src/handlers.js        predefined handlers (echo, flaky, sleep, alwaysFails, cleanupFinishedJobs)
 worker/external-worker.mjs   sample external worker
 docs/architecture.svg  the architecture chart above
 test/                  end-to-end and concurrency tests
