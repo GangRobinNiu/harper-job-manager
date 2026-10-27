@@ -186,6 +186,51 @@ Results on Harper 5.3.4 with 4 worker threads:
 - All end-to-end scenarios pass (15 as of the last run, on Harper 5.3.2 with 1 worker thread).
 - Concurrency, with `CLAIM_DELAY_MS=20` to widen the race window: with `Table.lock`, 300 of 300 jobs were claimed exactly once. With the lock replaced by a plain `get`, the same run claimed some jobs up to 12 times.
 
+## Deployment
+
+The job manager is a Harper instance running this component: the **queue node**. The same component also runs on Harper job nodes in a second mode, and external workers are plain HTTP clients that need no Harper at all.
+
+| Node | Runs | Configured by |
+| --- | --- | --- |
+| **Queue node** (one) | The queue tables, the API (`/trigger`, `/webhook`, `/events`, `/claim`, `/heartbeat`, `/complete`), the scheduler tick (cron and lease reaping), the admin UI, and the `local` queue | This component, `JOB_MANAGER_URL` unset |
+| **Harper job nodes** (any number) | Harper job handlers from `src/handlers.js`, claimed from the queue node over HTTP | This component, `JOB_MANAGER_URL` set to the queue node, `JOB_QUEUES` set to their queues |
+| **External workers** (any number) | Your own code or containers, using `/claim`, `/heartbeat`, and `/complete` | Any HTTP client; the sample is `worker/external-worker.mjs` |
+
+Keep heavy work off the queue node. It should only keep the books, so its load stays light and predictable (see "Scalability and availability"). The `local` queue is for maintenance and quick tests.
+
+### Setting up
+
+1. **Queue node.** Install Harper, check out this repo, run `npm install`, and start it with `harper run .` (or deploy it with Harper's `deploy_component` operation).
+2. **One stable address.** Callers, job nodes, and workers reach the queue node through a DNS name or load balancer, never the machine's own address, so the standby queue node in the backlog can take over later without reconfiguring anyone.
+3. **Lock it down.** Apply the checklist under "Admin UI sign-in": `authorizeLocal: false`, HTTPS with a certificate from a real certificate authority, plain HTTP off, and the operations API (`9925`) kept off the network.
+4. **Credentials.** Create a Harper user for each worker and job node. Today these must be super users (see "Limits"), so treat every worker credential as an admin credential and keep each one separate, so one can be revoked alone.
+5. **Cleanup.** Add a cron definition on the `local` queue that runs `cleanupFinishedJobs`, or `Job`, `Event`, and `JobEvent` grow without limit.
+6. **Harper job nodes.** Separate Harper instances with this component, **outside** the queue node's Harper cluster (see "Harper jobs"):
+
+   ```bash
+   JOB_MANAGER_URL=https://jobs.example.com:9927 JOB_MANAGER_USER=... JOB_MANAGER_PASS=... \
+   JOB_QUEUES=data-loader JOB_CONCURRENCY=8 harper run .
+   ```
+
+   They hold no job state, so an autoscaler can add and remove them on each queue's pending count.
+7. **External workers.** Point them at the same address:
+
+   ```bash
+   HARPER_URL=https://jobs.example.com:9927 HARPER_USER=... HARPER_PASS=... QUEUES=generic node worker/external-worker.mjs
+   ```
+
+### Network
+
+| From | To | Port |
+| --- | --- | --- |
+| Callers, webhooks, storage notifications | Queue node: `/trigger`, `/webhook`, `/events` | `9927` (HTTPS) |
+| Harper job nodes, external workers | Queue node: `/claim`, `/heartbeat`, `/complete` | `9927` (HTTPS) |
+| Operators | Queue node: `/admin_ui/` | `9927` (HTTPS) |
+| Administrators only, from inside the network | Queue node: operations API (users, roles, Studio) | `9925` |
+| Queue node | Standby queue node, once built: Harper replication | Harper's replication port |
+
+Workers only ever connect out to the queue node. Nothing connects in to them, so they can run behind NAT or in another network.
+
 ## Scalability and availability
 
 ### Where the work happens
@@ -258,11 +303,30 @@ The chosen direction is a **primary queue node with a standby** (see the backlog
   - No change in consistency: `JobEvent` rows are already written after the job's transaction commits, as a log that can trail the status change.
   - The standby queue node must replicate both databases.
   - Prior art: `prerender-plugin` keeps its render queue in a database of its own for the same reason.
+- **Archive finished jobs, and a real dead-letter table.** Needed at around 1 million jobs a day. Today finished jobs stay in `Job` until `cleanupFinishedJobs` deletes them, so the hot table carries a day of history, and the cleanup is one large burst of row-by-row deletes. Instead, `Job` holds only live work. Planned shape:
+  - **Only finished jobs move.** A completed job moves to `JobArchive`. A job that runs out of attempts moves to `DeadJob`, the dead-letter queue. A failure with retries left goes back to `pending` and stays in `Job`.
+  - **Move inline, in `/complete` and in lease reaping**, not in a separate listener. Write the archive row first, then delete the job from `Job`. Both use the job id as the key, so a retried move overwrites the same row and loses nothing. A sweeper in the scheduler tick moves any finished job left in `Job`, for example after a crash between the two steps.
+  - **Idempotency must look beyond `Job`.** Deduplication works today because the finished job is still in `Job`. Once jobs move out immediately, a retry with the same `Idempotency-Key` would create a second job. `enqueue` checks `Job`, `JobArchive`, and `DeadJob`, or a small `IdempotencyKey` table (key to job id). State the window in the docs, for example "retries within 7 days return the original job".
+  - **Fencing is unchanged.** A late `/complete` from a worker that lost its lease finds no job and gets `409`.
+  - **Dead-letter work.** Operators inspect `DeadJob`, rerun a job (move it back to `Job` as `pending`), or delete it. It keeps dead jobs longer than the archive keeps completed ones, and alerting can watch it for new rows.
+  - **Databases, split by traffic** (extends the previous item):
+
+    | Database | Tables | Traffic |
+    | --- | --- | --- |
+    | `job_queue` | `Job`, live only | every claim, heartbeat, and completion |
+    | `jobs` | `JobDefinition`, `EventSubscription`, `JobStats` | mostly reads |
+    | `job_history` | `JobArchive`, `DeadJob`, `JobEvent`, `Event` | appends, with their own retention |
+
+    `JobEvent` is an append-only log, so it lives with history from the start and never moves.
+  - **Retention.** `cleanupFinishedJobs` prunes only `job_history`: `JobArchive`, `JobEvent`, and `Event` after N days (about 30 million jobs a month at 1 million a day), `DeadJob` later. It never touches the hot table.
+  - **Lookups.** Add `GET /jobs/{id}`, which checks `Job`, then `JobArchive`, then `DeadJob`, so callers and the future Customer UI have one place to ask what happened to a job.
+  - **Admin UI counts.** Pending and running are counted from `Job`, and dead from `DeadJob`. These are small sets, so counting them directly stays exact and cheap. Completed becomes a rate, "Completed, last 24 h", read from a `JobStats` table with one row per hour per queue (`completed`, `dead`, `enqueued`). Increment it in the step that deletes the job from `Job`, which happens once per job, so retries and the sweeper never double-count. To keep one hot row from serializing every completion, use an atomic increment if Harper offers one (check `addTo` in the Harper version in use), or count in memory per thread and flush every few seconds. A `GET /stats` endpoint computes all tiles once, caches them for a few seconds, and serves every open tab, so the admin UI's cost does not grow with the number of viewers. Hourly rows also give a throughput chart.
+  - **Changes elsewhere.** The dead-letter queue moves from `GET /Job/?status=dead` to `GET /DeadJob/`. The admin UI's Completed and Dead tabs read the new tables, and the end-to-end tests that check `completed` or `dead` status follow them.
 - **Admin UI, next steps.** The internal, read-only admin UI (`/admin_ui/`) is done. Still to build:
-  - **Operator actions:** rerun a dead job (needs one new endpoint that resets it to `pending`), trigger a job, and enable or disable a definition.
+  - **Operator actions:** rerun a dead job (needs one new endpoint that resets it to `pending`, or moves it back from `DeadJob` once that exists), trigger a job, and enable or disable a definition.
   - **Customer UI.** A page where each tenant sees only its own jobs. Not safe on today's API: the REST tables are exported to any signed-in caller with no tenant filtering, so one tenant could read another's jobs, payloads, and definition `settings`. It needs a status endpoint scoped to the caller's tenant, returning only safe fields (status, times, milestone messages), with customer authentication.
   - **Live push instead of polling.** A table-wide SSE subscription replays every row on connect, so the page polls instead. Push would need a narrower feed, such as the `QueueSignal` table from the MQTT item.
-  - **Cheaper counts.** The admin UI runs on the queue node, and every open tab polls every 3 seconds. Each round counts jobs by reading every job id for each status (up to 10,000 each), which is most of the load it adds. Keep running counts in a small table updated on each status change, or use a count query that does not read the ids, so many open tabs cost the queue node little.
+  - **Cheaper counts.** The admin UI runs on the queue node, and every open tab polls every 3 seconds. Each round counts jobs by reading every job id for each status (up to 10,000 each), which is most of the load it adds, and the completed count is capped and wrong at high volume. The planned fix, `JobStats` counters behind a cached `GET /stats`, is part of "Archive finished jobs" above.
   - **Turn the admin UI off on job nodes.** Job nodes run the same component, so they serve `/admin_ui/` too, but it reads the job node's own tables, which are empty or unrelated. Someone opening it there sees an idle system. Disable it when `JOB_MANAGER_URL` is set, the same way the worker detects job-node mode, or redirect to the queue node. Until then, open the admin UI only on the queue node.
   - **Serve reads from the standby.** With the standby queue node, the admin UI can read the replicated tables there, taking its polling off the active node and staying up during a failover, at the cost of data a few seconds behind.
 
