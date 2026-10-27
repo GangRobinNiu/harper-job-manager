@@ -17,14 +17,28 @@ const state = {
 	selectedJobId: null,
 	paused: false,
 	jobs: [],
+	user: null,
 };
 
 const $ = (id) => document.getElementById(id);
 
+class SignedOut extends Error {}
+
 async function get(path) {
 	const response = await fetch(path, { headers: { accept: 'application/json' } });
+	if (response.status === 401) throw new SignedOut();
+	if (response.status === 403) throw new Error(`your user is not allowed to read ${path.split('?')[0]}`);
 	if (!response.ok) throw new Error(`${response.status} ${response.statusText} for ${path}`);
 	return response.json();
+}
+
+async function send(method, path, body) {
+	const response = await fetch(path, {
+		method,
+		headers: { accept: 'application/json', 'content-type': 'application/json' },
+		body: body === undefined ? undefined : JSON.stringify(body),
+	});
+	return { status: response.status, data: await response.json().catch(() => ({})) };
 }
 
 /** Build an element: el('td', { className: 'mono' }, 'text', childElement, ...). */
@@ -93,8 +107,12 @@ async function countStatus(status) {
 }
 
 async function refresh() {
-	if (state.paused || document.hidden) return;
+	if (!state.user || state.paused || document.hidden) return;
 	try {
+		// Check the session first: a data request without one gets a 401 Basic challenge, and the
+		// browser would show its own password box over the page.
+		const session = await send('GET', '/session');
+		if (!session.data.username) return showSignIn('Your session ended. Sign in again.');
 		const [pending, claimed, completed, dead, unrouted, jobs, definitions] = await Promise.all([
 			countStatus('pending'),
 			countStatus('claimed'),
@@ -116,6 +134,7 @@ async function refresh() {
 		setLive('ok', `Updated ${new Date().toLocaleTimeString()}`);
 		$('error').hidden = true;
 	} catch (error) {
+		if (error instanceof SignedOut) return showSignIn('Your session ended. Sign in again.');
 		setLive('down', 'Not reachable');
 		$('error').textContent = `Can't load data from Harper: ${error.message}. Retrying every ${POLL_MS / 1000} seconds.`;
 		$('error').hidden = false;
@@ -312,6 +331,71 @@ $('detail-close').addEventListener('click', closeDetail);
 document.addEventListener('keydown', (event) => event.key === 'Escape' && closeDetail());
 document.addEventListener('visibilitychange', () => !document.hidden && refresh());
 
+// ---------- sign-in ----------
+
+function showSignIn(message) {
+	state.user = null;
+	closeDetail();
+	$('app').hidden = true;
+	$('whoami').hidden = $('sign-out').hidden = $('pause').hidden = true;
+	$('error').hidden = true;
+	setLive('', 'Signed out');
+	$('sign-in').hidden = false;
+	$('sign-in-error').textContent = message ?? '';
+	$('sign-in-error').hidden = !message;
+	$('sign-in-password').value = '';
+	$('sign-in-username').focus();
+}
+
+function showApp(user) {
+	state.user = user;
+	$('sign-in').hidden = true;
+	$('app').hidden = false;
+	$('whoami').textContent = `${user.username} (${user.superUser ? 'administrator' : user.role ?? 'no role'})`;
+	$('whoami').hidden = $('sign-out').hidden = $('pause').hidden = false;
+	refresh();
+}
+
+/** On localhost, Harper's authorizeLocal signs every request in as a super user, so there is no form. */
+async function checkSession(message) {
+	const { status, data } = await send('GET', '/session');
+	if (status === 200 && data.username) showApp(data);
+	else showSignIn(message);
+}
+
+$('sign-in-form').addEventListener('submit', async (event) => {
+	event.preventDefault();
+	const username = $('sign-in-username').value.trim();
+	const password = $('sign-in-password').value;
+	if (!username || !password) {
+		$('sign-in-error').textContent = 'Enter your username and password.';
+		$('sign-in-error').hidden = false;
+		return;
+	}
+	$('sign-in-submit').disabled = true;
+	try {
+		const { status, data } = await send('POST', '/session', { username, password });
+		if (status === 200 && data.username) return showApp(data);
+		$('sign-in-error').textContent = data.error ?? `Sign-in failed (${status}).`;
+		$('sign-in-error').hidden = false;
+	} catch (error) {
+		$('sign-in-error').textContent = `Can't reach Harper: ${error.message}`;
+		$('sign-in-error').hidden = false;
+	} finally {
+		$('sign-in-submit').disabled = false;
+	}
+});
+
+$('sign-out').addEventListener('click', async () => {
+	await send('DELETE', '/session').catch(() => {});
+	await checkSession();
+	if (state.user) {
+		$('error').textContent = 'Still signed in: on localhost, Harper signs every request in as an administrator (authorizeLocal).';
+		$('error').hidden = false;
+	}
+});
+
 setStatusFilter('');
 setTab('jobs');
+checkSession();
 setInterval(refresh, POLL_MS);

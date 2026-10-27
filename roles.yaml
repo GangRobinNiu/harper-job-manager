@@ -1,0 +1,33 @@
+# Roles this component declares. Harper creates or updates them when the component loads.
+# Users are not declared here; add them with the operations API (see README, "Admin UI sign-in").
+
+# Read-only access for the admin UI: can see jobs, events, and definitions, but not change them.
+# The job manager's own endpoints (/trigger, /webhook, /events, /claim, /heartbeat, /complete)
+# also require a super user, so this role cannot start, claim, or complete jobs.
+job_viewer:
+  jobs:
+    Job:
+      read: true
+    JobEvent:
+      read: true
+    Event:
+      read: true
+    EventSubscription:
+      read: true
+    # Every attribute except `settings`, which can hold tenant connection details and secrets.
+    JobDefinition:
+      read: true
+      attributes:
+        id: { read: true }
+        name: { read: true }
+        tenant: { read: true }
+        queue: { read: true }
+        handler: { read: true }
+        settings: { read: false }
+        cron: { read: true }
+        timezone: { read: true }
+        nextRunAt: { read: true }
+        maxAttempts: { read: true }
+        leaseMs: { read: true }
+        priority: { read: true }
+        enabled: { read: true }

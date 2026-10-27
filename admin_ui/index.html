@@ -16,12 +16,27 @@
 			<span id="live-dot" class="dot" aria-hidden="true"></span>
 			<span id="live-text">Connecting…</span>
 			<button id="pause" type="button">Pause</button>
+			<span id="whoami" class="whoami" hidden></span>
+			<button id="sign-out" type="button" hidden>Sign out</button>
 		</div>
 	</header>
 
 	<div id="error" class="error" hidden></div>
 
-	<main>
+	<section id="sign-in" class="sign-in" hidden aria-labelledby="sign-in-title">
+		<form id="sign-in-form" class="sign-in-card" novalidate>
+			<h2 id="sign-in-title">Sign in</h2>
+			<p class="note">Use a Harper user with the <code>job_viewer</code> role, or an administrator.</p>
+			<label for="sign-in-username">Username</label>
+			<input id="sign-in-username" name="username" autocomplete="username" required>
+			<label for="sign-in-password">Password</label>
+			<input id="sign-in-password" name="password" type="password" autocomplete="current-password" required>
+			<p id="sign-in-error" class="error-text" role="alert" hidden></p>
+			<button id="sign-in-submit" type="submit">Sign in</button>
+		</form>
+	</section>
+
+	<main id="app" hidden>
 		<section class="tiles" aria-label="Job counts">
 			<button class="tile" data-status="pending" type="button"><span class="tile-label">Pending</span><span class="tile-value" id="count-pending">–</span></button>
 			<button class="tile" data-status="claimed" type="button"><span class="tile-label">Running</span><span class="tile-value" id="count-claimed">–</span></button>

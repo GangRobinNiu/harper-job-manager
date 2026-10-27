@@ -54,6 +54,22 @@ h1 { margin: 0; font-size: 1.15rem; letter-spacing: -0.01em; }
 	padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface);
 }
 
+.whoami { color: var(--fg); }
+
+.sign-in { display: grid; place-items: center; padding: 48px 16px; }
+.sign-in-card {
+	display: grid; gap: 8px; width: min(360px, 100%); padding: 24px;
+	background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+}
+.sign-in-card h2 { margin: 0 0 4px; font-size: 1.1rem; }
+.sign-in-card .note { margin-bottom: 8px; }
+.sign-in-card label { color: var(--muted); font-size: 0.85rem; }
+.sign-in-card input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.sign-in-card button { margin-top: 8px; padding: 9px; border: 0; border-radius: 6px; background: var(--accent); color: var(--surface); font-weight: 600; }
+.sign-in-card button:disabled { opacity: 0.6; cursor: wait; }
+.sign-in-card .error-text { margin: 0; }
+code { font-family: var(--mono); font-size: 0.9em; }
+
 .error { margin: 12px max(16px, 3vw) 0; padding: 10px 12px; border-radius: 8px; background: var(--dead-bg); color: var(--dead); }
 
 main { padding: 16px max(16px, 3vw) 40px; display: grid; gap: 16px; }

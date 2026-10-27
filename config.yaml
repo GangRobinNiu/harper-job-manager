@@ -5,7 +5,11 @@ rest: true
 graphqlSchema:
   files: 'schema.graphql'
 
-# Admin UI at /admin_ui/ (internal, read-only; reads the REST tables above)
+# Roles: job_viewer, a read-only role for admin UI users
+roles:
+  files: 'roles.yaml'
+
+# Admin UI at /admin_ui/ (internal, read-only; reads the REST tables above, signs in via /session)
 static:
   files: 'admin_ui/**'
   urlPath: 'admin_ui'

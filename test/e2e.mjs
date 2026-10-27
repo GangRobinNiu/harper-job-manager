@@ -216,6 +216,7 @@ await test('Event can pin an image version; the worker gets that image', async (
 	const normal = jobs.find((j) => !j.payload.imageVersion);
 	assert.equal(canary.handler, 'jfrog/acme/data-loader:1.5-rc');
 	assert.equal(normal.handler, 'jfrog/acme/data-loader:1.4');
+	for (const job of jobs) await complete('w-dl', job.id, true);
 });
 
 await test('Event for a folder with no job definition: audit still runs, the gap is recorded', async () => {
@@ -240,5 +241,8 @@ await test('Cron definition enqueues a run on schedule (waits for the next minut
 	assert.match(job.id, /:cron-\d+$/);
 	assert.ok(job.payload.scheduledAt);
 });
+
+// Clean up: an every-minute cron definition left enabled would keep enqueuing jobs forever.
+await http('DELETE', `/JobDefinition/${scheduled}`);
 
 console.log(`\n${passed} tests passed`);

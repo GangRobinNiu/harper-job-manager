@@ -127,6 +127,50 @@ The `local` queue is for internal use: job system maintenance such as `cleanupFi
 | `POST /claim` | `{ workerId, queues: [...], limit, leaseMs? }` | Claimed jobs with `handler` and tenant `settings` |
 | `POST /heartbeat` | `{ workerId, jobId, milestone?, data?, extendMs? }` | `200`, or `409` if the worker lost the job |
 | `POST /complete` | `{ workerId, jobId, ok, result?, error? }` | `200` with the new status, or `409` if the lease was lost |
+| `GET /session` | | `{ username, role, superUser }`; `username` is `null` when nobody is signed in |
+| `POST /session` | `{ username, password }` | Signs in and sets the session cookie; `403` for a wrong password |
+| `DELETE /session` | | Signs out |
+
+Every endpoint above except `/session` requires a **super user**: `401` when not signed in, `403` for any other role. Workers and job nodes must therefore use super user credentials (`HARPER_USER`, `JOB_MANAGER_USER`). On localhost, `authorizeLocal` signs every request in as a super user.
+
+## Admin UI sign-in
+
+On localhost the admin UI opens straight away, because `authorizeLocal` signs every local request in as a super user. From any other address it shows a sign-in form that uses Harper's session cookies (`/session`).
+
+**A read-only user.** The component declares a `job_viewer` role in `roles.yaml`. It can read the job tables but not `JobDefinition.settings`, which can hold secrets, and the job endpoints refuse it. Create a user with it through the operations API, from the Harper machine:
+
+```bash
+curl -X POST localhost:9925 -H 'content-type: application/json' \
+  -d '{"operation":"add_user","role":"job_viewer","username":"viewer","password":"CHOOSE-A-PASSWORD","active":true}'
+```
+
+Harper creates roles from `roles.yaml` when it starts, so restart Harper after adding or changing a role there.
+
+**HTTPS.** Without it, passwords and the session cookie travel unencrypted. Harper's settings are in `harper-config.yaml` in the Harper root (not this repo):
+
+1. Under `http:`, set `securePort: 9927` (any free port). Restart Harper. It serves the same app on `https://<host>:9927` with a self-signed certificate, so browsers warn.
+2. For a certificate the browser trusts on a development machine, use [mkcert](https://github.com/FiloSottile/mkcert):
+
+   ```bash
+   winget install FiloSottile.mkcert      # then open a new terminal
+   mkcert -install                         # trusts mkcert's local CA (a Java keytool error here only affects Java)
+   cd <harper root>/keys
+   mkcert -cert-file harper-cert.pem -key-file harper-key.pem <your-ip> localhost 127.0.0.1
+   ```
+
+   Then point `tls:` at the files (`certificate: <harper root>/keys/harper-cert.pem`, `privateKey: <harper root>/keys/harper-key.pem`) and restart Harper. The certificate is trusted only on machines that trust mkcert's CA, and must be reissued if the IP address changes. If one browser profile still says "Not secure", clear that profile's saved data for the site; it may remember an earlier "proceed anyway".
+3. In production, use a certificate from a real certificate authority.
+
+Over HTTPS, Harper marks the session cookie `Secure`. It names the cookie after the request's origin, so another website cannot send requests with a user's session.
+
+**Ports.** `9926` is the app over HTTP and `9927` the same app over HTTPS: REST tables, job endpoints, `/session`, and `/admin_ui/`. `9925` is Harper's operations API (users, roles, Studio): the most powerful port, and HTTP only here.
+
+**Before running anywhere but a development machine:**
+
+- Set `authentication.authorizeLocal: false`, so local requests also need credentials.
+- Serve HTTPS and, once nothing uses it, turn plain HTTP off (`http.port: null`).
+- Keep the operations API (`9925`) off the network, or give it HTTPS (`operationsApi.network.securePort`).
+- Give admin UI users the `job_viewer` role, not super user credentials.
 
 Tables: `JobDefinition`, `Job`, `JobEvent`, `Event`, `EventSubscription` (see `schema.graphql`).
 
@@ -185,8 +229,8 @@ The chosen direction is a **primary queue node with a standby** (see the backlog
 
 - **One queue node.** In core Harper, `Table.lock` is exclusive across every thread of one node, not across a cluster, so all claims go through one queue node. That node is a single point of failure: while it is down, running jobs keep going and hold their results, but nothing new is accepted or claimed. See the standby queue node in the backlog.
 - **Scheduling granularity.** The tick runs every 5 seconds, so cron runs and lease expiry are accurate to about 5 seconds.
-- **No per-worker authorization.** Any authenticated worker can claim from any queue it names. Production would give each worker a role limited to its queues.
-- **The admin UI is internal.** Its files are public, like all static files, and its data comes from the REST tables. On localhost, Harper allows that without signing in (`authorizeLocal`). Anywhere else, requests need Harper credentials, and anyone with them sees every tenant's jobs.
+- **Workers need super user credentials.** The job endpoints accept only super users, so every worker and job node can claim from any queue and complete any job. Production would give each worker a role limited to its queues.
+- **The admin UI is internal.** Its files are public, like all static files; its data needs a signed-in user (see "Admin UI sign-in"). Any signed-in user, `job_viewer` included, sees every tenant's jobs and payloads.
 - **Simulated external work.** The sample worker simulates running `job.handler`. A real one would start that container image, for example as a Kubernetes Job.
 - **Synchronous routing.** The router enqueues jobs during the publish call, so a publisher gets a result right away, but a publish is not retried if enqueueing fails partway. If a job definition is missing, the event is still recorded with the error.
 - **Cleanup is a job.** Old jobs and events are removed by the `cleanupFinishedJobs` handler; schedule it with a cron definition.
@@ -213,6 +257,9 @@ The chosen direction is a **primary queue node with a standby** (see the backlog
   - **Operator actions:** rerun a dead job (needs one new endpoint that resets it to `pending`), trigger a job, and enable or disable a definition.
   - **A customer-facing view.** Not safe on today's API: the REST tables are exported to any signed-in caller with no tenant filtering, so one tenant could read another's jobs, payloads, and definition `settings`. It needs a status endpoint scoped to the caller's tenant, returning only safe fields (status, times, milestone messages), with customer authentication.
   - **Live push instead of polling.** A table-wide SSE subscription replays every row on connect, so the page polls instead. Push would need a narrower feed, such as the `QueueSignal` table from the MQTT item.
+  - **Cheaper counts.** The admin UI runs on the queue node, and every open tab polls every 3 seconds. Each round counts jobs by reading every job id for each status (up to 10,000 each), which is most of the load it adds. Keep running counts in a small table updated on each status change, or use a count query that does not read the ids, so many open tabs cost the queue node little.
+  - **Turn the admin UI off on job nodes.** Job nodes run the same component, so they serve `/admin_ui/` too, but it reads the job node's own tables, which are empty or unrelated. Someone opening it there sees an idle system. Disable it when `JOB_MANAGER_URL` is set, the same way the worker detects job-node mode, or redirect to the queue node. Until then, open the admin UI only on the queue node.
+  - **Serve reads from the standby.** With the standby queue node, the admin UI can read the replicated tables there, taking its polling off the active node and staying up during a failover, at the cost of data a few seconds behind.
 
 ## Files
 
@@ -229,5 +276,6 @@ worker/external-worker.mjs   sample external worker
 docs/architecture.svg  the architecture chart above
 docs/walkthrough.md    five copy-paste demos: first job, a running job, retries, routing, cron
 admin_ui/              internal admin UI, served at /admin_ui/ by Harper's static plugin
+roles.yaml             job_viewer, a read-only role for admin UI users
 test/                  end-to-end and concurrency tests
 ```
