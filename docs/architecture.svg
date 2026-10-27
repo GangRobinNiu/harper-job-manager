@@ -40,7 +40,7 @@ svg { --bg:#ffffff;--fg:#1b2321;--muted:#5b6764;--line:#c9d1ce;--edge:#46524f;--
           <g class="ext"><rect x="20" y="170" width="170" height="50" rx="8"/></g>
           <text class="t" x="105" y="192">API client</text><text class="s" x="105" y="208">starts a run</text>
           <g class="ext"><rect x="20" y="250" width="170" height="50" rx="8"/></g>
-          <text class="t" x="105" y="272">Input storage</text><text class="s" x="105" y="288">file created</text>
+          <text class="t" x="105" y="272">Event sources</text><text class="s" x="105" y="288">any type · file created</text>
 
           <line class="edge" x1="190" y1="115" x2="248" y2="115" marker-end="url(#a)"/>
           <line class="edge" x1="190" y1="195" x2="248" y2="195" marker-end="url(#a)"/>
@@ -141,10 +141,11 @@ svg { --bg:#ffffff;--fg:#1b2321;--muted:#5b6764;--line:#c9d1ce;--edge:#46524f;--
 
           <!-- Clients -->
           <g class="ext"><rect x="1150" y="300" width="180" height="156" rx="8"/></g>
-          <text class="t" x="1240" y="356">Clients</text>
+          <text class="t" x="1240" y="356">Status &amp; monitoring</text>
           <text class="s" x="1240" y="375">REST /Job/?status=dead</text>
           <text class="s" x="1240" y="392">SSE · WebSocket · MQTT</text>
-          <text class="lbl mid" x="1240" y="420">Web UI: backlog</text>
+          <text class="lbl mid" x="1240" y="418">Admin UI (internal): /admin_ui/</text>
+          <text class="lbl mid" x="1240" y="436">Customer UI: backlog</text>
           <line class="edge" x1="1080" y1="328" x2="1148" y2="328" marker-end="url(#a)"/>
           <text class="lbl mid" x="1114" y="320">REST</text>
           <line class="edge" x1="1080" y1="428" x2="1148" y2="428" marker-end="url(#a)"/>
