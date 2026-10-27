@@ -253,6 +253,11 @@ The chosen direction is a **primary queue node with a standby** (see the backlog
   - Claiming stays on `/claim` with `Table.lock`. MQTT sends every message to every subscriber, so several nodes may wake at once, and the lock still gives each job to one node.
   - Keep a slow fallback poll (about 30 seconds) for messages missed during a disconnect and for retries whose `runAfter` comes due with no new signal. The scheduler tick could also signal queues whose delayed jobs just came due.
   - Prior art: the static prerender template publishes `queue_status/producer` (`queued` or `empty`) and its workers claim only when it says `queued`.
+- **Put the `Job` table in its own database.** Harper serializes writes within a database and commits each database separately. Today `Job`, `JobEvent`, `Event`, `JobDefinition`, and `EventSubscription` all live in `jobs`, so milestone and event writes wait behind claims, heartbeats, and completions on the hot `Job` table. Cheap to do; worth it once write load on the queue node grows. Planned shape:
+  - Declare `Job` with `@table(database: "job_queue")` in `schema.graphql` and read it from `databases.job_queue` in `src/queue.js` and `resources.js`. The REST path `/Job/` stays the same.
+  - No change in consistency: `JobEvent` rows are already written after the job's transaction commits, as a log that can trail the status change.
+  - The standby queue node must replicate both databases.
+  - Prior art: `prerender-plugin` keeps its render queue in a database of its own for the same reason.
 - **Admin UI, next steps.** The internal, read-only admin UI (`/admin_ui/`) is done. Still to build:
   - **Operator actions:** rerun a dead job (needs one new endpoint that resets it to `pending`), trigger a job, and enable or disable a definition.
   - **Customer UI.** A page where each tenant sees only its own jobs. Not safe on today's API: the REST tables are exported to any signed-in caller with no tenant filtering, so one tenant could read another's jobs, payloads, and definition `settings`. It needs a status endpoint scoped to the caller's tenant, returning only safe fields (status, times, milestone messages), with customer authentication.
@@ -279,3 +284,7 @@ admin_ui/              internal admin UI, served at /admin_ui/ by Harper's stati
 roles.yaml             job_viewer, a read-only role for admin UI users
 test/                  end-to-end and concurrency tests
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
